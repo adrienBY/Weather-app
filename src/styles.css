@@ -40,9 +40,9 @@ svg{display:block}
   padding:0 calc(var(--sar) + var(--gut)) calc(var(--sab) + 2rem) calc(var(--sal) + var(--gut))}
 
 /* ── hero ── */
-#hero{min-height:calc(100svh - 10.5rem);display:flex;flex-direction:column;justify-content:center;
-  padding-top:calc(var(--sat) + 3.25rem);padding-bottom:1.75rem;will-change:transform,opacity;
-  text-shadow:0 1px 2px rgba(0,0,0,.16),0 0 26px rgba(0,0,0,.20)}
+#hero{min-height:calc(100svh - 10.5rem);display:flex;flex-direction:column;justify-content:flex-start;
+  padding-top:calc(var(--sat) + 3.5rem);padding-bottom:1.75rem;will-change:transform,opacity;
+  text-shadow:0 1px 2px rgba(0,0,0,.14),0 0 30px rgba(0,20,60,.22)}
 #city{display:flex;align-items:center;gap:.45rem;align-self:flex-start;font-size:1.375rem;line-height:1.75rem;font-weight:600;letter-spacing:var(--t22)}
 #city .pin{width:.95rem;height:.95rem;opacity:.9;display:none}
 #city.gps .pin{display:block}
@@ -132,15 +132,16 @@ footer a{color:var(--ui2);text-decoration:none}
 #detail{position:fixed;inset:0;z-index:4;pointer-events:none;visibility:hidden}
 #detail.on{visibility:visible}
 #detail.live{pointer-events:auto}
-#dp{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform,clip-path;display:flex;flex-direction:column;overflow:hidden}
-#dh{position:relative;flex:none;padding:.6rem 1.25rem .9rem;touch-action:none;cursor:grab}
+#dp{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;overflow:hidden;contain:strict}
+#dpi{position:absolute;inset:0;transform-origin:0 0;will-change:transform;display:flex;flex-direction:column}
+#dh{position:relative;flex:none;padding:.6rem 1.25rem .9rem;touch-action:none;cursor:grab;will-change:opacity}
 .grab{width:2.25rem;height:.3125rem;border-radius:99px;background:rgba(255,255,255,.32);margin:0 auto .85rem}
 .dtitle{display:flex;align-items:center;gap:.55rem}
 .dtitle svg{width:1.6rem;height:1.6rem;flex:none}
 #dTitle{font-size:1.75rem;line-height:2.125rem;font-weight:700;letter-spacing:var(--t28)}
 #dClose{position:absolute;right:1rem;top:1.15rem;width:2.25rem;height:2.25rem;border-radius:50%;background:rgba(255,255,255,.14);display:grid;place-items:center}
 #dClose svg{width:1rem;height:1rem}
-#db{flex:1;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;padding:0 1.25rem calc(var(--sab) + 1.5rem);scrollbar-width:none;
+#db{flex:1;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;will-change:opacity;padding:0 1.25rem calc(var(--sab) + 1.5rem);scrollbar-width:none;
   -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 .75rem);mask-image:linear-gradient(180deg,transparent 0,#000 .75rem)}
 #db::-webkit-scrollbar{display:none}
 .big{display:flex;align-items:baseline;gap:.6rem;margin:.25rem 0 .2rem}
@@ -150,6 +151,8 @@ footer a{color:var(--ui2);text-decoration:none}
 .lede{font-size:.9375rem;line-height:1.25rem;letter-spacing:var(--t15);color:var(--ui2);margin:.35rem 0 1rem}
 .sect{margin-top:1.5rem;font-size:.8125rem;font-weight:600;letter-spacing:var(--t13);color:var(--ui3)}
 .chart{margin-top:.6rem;width:100%;overflow:visible}
+.chart[data-ch]{touch-action:pan-y;cursor:ew-resize}
+.chart .rd{font-size:12px;font-weight:600;fill:#fff}
 .chart text{font-family:var(--font);font-size:11px;fill:rgba(255,255,255,.58);font-variant-numeric:tabular-nums}
 .stats{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-top:1rem}
 .stat{padding:.75rem .9rem;border-radius:1rem;background:rgba(255,255,255,.07)}
