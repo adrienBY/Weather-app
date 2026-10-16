@@ -230,7 +230,8 @@ function gpuRender(dt) {
   const deck = sstep(0.25, 0.6, strat);
   const top = deck > 0.5 ? 1 : (deck < 0.35 ? CONFIG.sky.bankTop : BAND[1]);
   if (top !== BAND[1]) { BAND[1] = top; sizeClouds(); }
-  const freeze = EX.active && EX.prog > 0.35 && !scrubbing && !CS.on && cloudsOn;
+  const skipSky = halfRate && (frameNo & 1) && cloudsOn && !scrubbing && !CS.on;
+  const freeze = (EX.active && EX.prog > 0.35 && !scrubbing && !CS.on && cloudsOn) || skipSky;
   if (freeze) { /* history kept as it is */ }
   else if (cov > 0.008 && g.tex.shape) {
     cloudsOn = true;
@@ -266,7 +267,7 @@ function gpuRender(dt) {
     glassDirty = dropsAlive > 0;
   }
   // 5. sky → texture (behind a sheet at rest, every other frame) + 6. the material's blur
-  const reuse = EX.rest && !scrubbing && !CS.on && (frameNo & 1);
+  const reuse = (EX.rest && !scrubbing && !CS.on && (frameNo & 1)) || skipSky;
   if (!reuse) {
     const f = g.u.sky.f;
     v4(f, 0, cw, ch, skyClock); v4(f, 4, BAND[0], BAND[1]);
