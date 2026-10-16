@@ -87,7 +87,7 @@ function dayIndex(t) {
    back at the edges, and it can be grabbed mid-flight at any moment.
    ============================================================================= */
 const vp = $('viewport'), content = $('content'), heroEl = $('hero'), bar = $('bar');
-const SC = { y: 0, v: 0, max: 0, mode: 0, bound: 0, id: -1, sx: 0, sy: 0, start: 0, axis: 0, ht: new Float64Array(8), hy: new Float64Array(8), hn: 0 };
+const SC = { y: 0, v: 0, max: 0, mode: 0, bound: 0, id: -1, lastMove: 0, sx: 0, sy: 0, start: 0, axis: 0, ht: new Float64Array(8), hy: new Float64Array(8), hn: 0 };
 const SCR = new Float32Array(1);
 let suppressClick = false, heroH = 600, heroShift = 0, heroAlpha = 1, contentH = 0;
 const RB = 0.55;
@@ -113,7 +113,7 @@ function releasePress() { if (pressW) pressW.pressT = 0; MF.down = false; }
 vp.addEventListener('pointerdown', e => {
   if (EX.active) return;
   markInteraction(); enableTilt();
-  SC.id = e.pointerId; SC.sx = e.clientX; SC.sy = e.clientY; SC.axis = 0; suppressClick = false;
+  SC.id = e.pointerId; SC.sx = e.clientX; SC.sy = e.clientY; SC.axis = 0; SC.lastMove = performance.now(); suppressClick = false;
   SC.start = rawFromScroll(SC.y);                       // continue from what's on screen
   let caught = false;
   if (SC.mode === 2 || SC.mode === 3) { caught = Math.abs(SC.v) > 60; SC.mode = 0; SC.v = 0; }   // catch it mid-flight
@@ -135,7 +135,7 @@ vp.addEventListener('pointermove', e => {
       try { vp.setPointerCapture(e.pointerId); } catch (err) { }
     } else if (Math.abs(dx) > 8) { SC.axis = 2; releasePress(); }
   }
-  if (SC.axis === 1) { SC.y = scrollFromRaw(SC.start - dy); histPush(e.timeStamp, e.clientY); }
+  if (SC.axis === 1) { SC.y = scrollFromRaw(SC.start - dy); histPush(e.timeStamp, e.clientY); SC.lastMove = performance.now(); }
   if (tch.on) skyMove(e.clientX, e.clientY, e.timeStamp);
   if (pressW) { pressX = e.clientX; pressY = e.clientY; }
 });
@@ -219,10 +219,12 @@ function uiUpdate(dt) {
   const y = SC.y;
   heroShift = y > 0 ? y * 0.32 : 0;
   const p = clamp(y / (heroH * 0.65), 0, 1);
-  heroAlpha = clamp(1 - p * 1.15, 0, 1);
+  morphTick(dt, y);
+  // the rest of the hero (high/low, pills) leaves with the collapse, or with the scroll
+  heroAlpha = Math.min(clamp(1 - p * 1.15, 0, 1), 1 - sstep(0, 0.55, MF.p));
   const ht = 'translate3d(0,' + heroShift.toFixed(1) + 'px,0)', ho = heroAlpha.toFixed(3);
   if (ht !== lastHT) { heroEl.style.transform = ht; lastHT = ht; }
-  if (ho !== lastHO) { heroEl.style.opacity = ho; lastHO = ho; }
+  if (ho !== lastHO) { heroEl.style.opacity = ho; heroEl.style.pointerEvents = heroAlpha < 0.05 ? 'none' : ''; lastHO = ho; }
   const bv = sstep(0.55, 0.95, p).toFixed(3);
   if (bv !== lastBar) { bar.style.setProperty('--bar', bv); lastBar = bv; }
   const s = PUSH, cx = cssW / 2, cy = cssH / 2;
@@ -278,7 +280,24 @@ function uiBusy() { return SC.mode !== 0 || EX.active || CS.on || (pressW && pre
    become a 17 px semibold one without a pop. Everything is scroll- or spring-
    driven: it tracks the finger, reverses, and can be grabbed mid-way.
    ============================================================================= */
-const MF = { layer: null, items: [], key: '', lk: '', down: false, downIt: null, dv: 0 };
+const MF = { layer: null, items: [], key: '', lk: '', down: false, downIt: null, dv: 0, p: 0, v: 0, tgt: 0, lastY: 0 };
+// The hero ⇄ title-bar morph is a little state machine on its own clock, not scroll-linked:
+// any scroll down starts the collapse and it plays through to the end even if the page
+// stops; scrolling back up near the top expands it again. The only thing that pauses it
+// is a finger held still on the screen — it waits there, and carries on when the finger
+// moves or lifts. Past the hero it is always collapsed, at the very top always expanded.
+function morphTick(dt, y) {
+  const dy = y - MF.lastY; MF.lastY = y;
+  if (y <= 0.5) MF.tgt = 0;
+  else if (y >= heroH * 0.5) MF.tgt = 1;
+  else if (dy > 0.3) MF.tgt = 1;
+  else if (dy < -0.3 && y < heroH * 0.3) MF.tgt = 0;
+  const held = SC.id !== -1 && SC.axis !== 2 && performance.now() - SC.lastMove > 70;
+  if (held) { MF.v = 0; return; }
+  if (MF.p === MF.tgt && MF.v === 0) return;
+  MF.v = springTo(MF.p, MF.v, MF.tgt, calm ? 0.3 : 0.55, 1, dt, SCR, 0); MF.p = SCR[0];
+  if (Math.abs(MF.p - MF.tgt) < 1e-3 && Math.abs(MF.v) < 1e-3) { MF.p = MF.tgt; MF.v = 0; }
+}
 function setupMorph() {
   const layer = document.createElement('div'); layer.id = 'morph'; layer.setAttribute('aria-hidden', 'true');
   document.body.insertBefore(layer, bar);
@@ -325,18 +344,15 @@ function morphUpdate(dt, y, s, fade) {
   // press feedback for the city and the temperature (their originals are invisible hit targets)
   MF.dv += ((MF.down ? 1 : 0) - MF.dv) * (1 - Math.exp(-dt * (MF.down ? 45 : 16)));
   if (!MF.down && MF.dv < 0.002) { MF.dv = 0; MF.downIt = null; }
-  const ymax = heroH * 0.5;
+  const ny = y - heroShift, e = clamp(MF.p, 0, 1);       // how far the page has carried the hero; the morph's progress
   for (const it of MF.items) {
     const scy = it.sy + it.ch / 2, dcy = it.dy + it.dh / 2;
-    // progress over a scroll distance chosen so the copy starts moving exactly with the
-    // page (ease-out: slope 1 at the start) and settles into the bar without a bump
-    const u = clamp(y / Math.max(1, Math.min(2 * (scy - dcy), ymax)), 0, 1);
-    let e, fx, fy, fs, tx = 0, ty = 0, ts = 1;
+    let fx, fy, fs, tx = 0, ty = 0, ts = 1;
     if (calm) {        // reduced motion: no flight — the copy stays with the page and cross-fades
-      e = u; fx = it.sx; fy = it.sy - y + heroShift; fs = 1;
+      fx = it.sx; fy = it.sy - ny; fs = 1;
     } else {
-      e = 1 - (1 - u) * (1 - u);
-      const rx = lerp(it.sx, it.dx, e), rcy = lerp(scy, dcy, e) - Math.min(y, 0);
+      // expanded, the copy rides with the page; collapsing, it leaves from wherever it is
+      const rx = lerp(it.sx, it.dx, e), rcy = lerp(scy - ny, dcy, e);
       fs = Math.pow(it.k, e); ts = fs / it.k;
       fx = rx; fy = rcy - fs * it.ch / 2;
       tx = rx - it.dx; ty = rcy - ts * it.dh / 2 - it.dy;
@@ -1241,7 +1257,7 @@ setInterval(() => {
   const n = frames; frames = 0;
   const d = $('dbg');
   if (d.hidden) return;
-  d.textContent = (n * 2) + ' fps\n' + (emaMs ? emaMs.toFixed(2) : '–') + ' ms ' + (gpuTimed ? '(gpu)' : '(vsync ' + (refreshMs ? refreshMs.toFixed(1) : '–') + ')') +
+  d.textContent = (gpu ? 'WebGPU' : gl ? 'WebGL2' : 'no GPU') + ' · ' + (n * 2) + ' fps\n' + (emaMs ? emaMs.toFixed(2) : '–') + ' ms ' + (gpuTimed ? '(gpu)' : '(vsync ' + (refreshMs ? refreshMs.toFixed(1) : '–') + ')') +
     '\nscale ' + STEPS[stepIdx].toFixed(2) + '× · ' + cw + '×' + ch + (cHist[0] ? '\nclouds ' + cHist[0].w + '×' + cHist[0].h + ' · ' + CONFIG.quality.cloudSteps + ' steps' : '') +
     '\ndrops ' + dropsAlive + (idle ? ' · idle ' + CONFIG.quality.idleFps : ' · active') + (calm ? ' · calm' : '');
 }, 500);
@@ -1259,7 +1275,7 @@ function boot() {
   // Reduce Transparency: solid panels instead of see-through glass (HIG)
   if (matchMedia('(prefers-reduced-transparency: reduce)').matches) CONFIG.glassWidgets = false;
   if (!CONFIG.glassWidgets) document.body.classList.add('noglass');
-  try { initGL(); } catch (e) { gl = null; document.body.classList.add('nogl'); console.error(e); }
+  startRenderer();                       // WebGPU, else WebGL2 (async: the UI runs meanwhile)
   registerWidgets();
   setupMorph();
   $('hTitle').textContent = STR.hours;
@@ -1274,8 +1290,6 @@ function boot() {
     if (document.hidden) stop();
     else { markInteraction(); start(); if (Date.now() - FETCHED > 10 * 60000) refresh(); }
   });
-  canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); stop(); });
-  canvas.addEventListener('webglcontextrestored', () => { try { initGL(); applyScale(); start(); } catch (err) { } });
   enableTilt();
   const cached = store.get('ciel:v3');
   if (cached && cached.data && cached.loc) { AQ = cached.aq; applyData(cached.loc, cached.data, cached.t, true); }
@@ -1289,8 +1303,8 @@ function boot() {
   }, 60000);
   installManifest();
   registerSW();
-  window.ciel = { CONFIG, P, T, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, prog: EX.prog, dim: UI_DIM, s: Array.from(EX.s).map(v => +v.toFixed(1)) }; },
-    step: dt => { uiUpdate(dt); if (gl) { update(dt); render(dt); } },   // deterministic stepping for frame-by-frame tests
+  window.ciel = { CONFIG, P, T, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get morph() { return MF.p; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, prog: EX.prog, dim: UI_DIM, s: Array.from(EX.s).map(v => +v.toFixed(1)) }; },
+    step: dt => { uiUpdate(dt); drawFrame(dt); }, get renderer() { return gpu ? 'webgpu' : gl ? 'webgl2' : 'none'; },   // deterministic stepping for frame-by-frame tests
     // self-check of the celestial frame: the sun's RA/dec recovered from the local→equatorial matrix vs. the ephemeris
     sky: () => { const e = [0, 1, 2].map(i => EQM[i] * SUND[0] + EQM[3 + i] * SUND[1] + EQM[6 + i] * SUND[2]); return { ra: Math.atan2(e[1], e[0]), dec: Math.asin(e[2]), sra: A.sra, sdec: A.sdec }; } };
 }
