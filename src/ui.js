@@ -211,7 +211,7 @@ function uiUpdate(dt) {
       if (Math.abs(w.press - w.pressT) < 1e-3 && Math.abs(w.pressV) < 1e-3) { w.press = w.pressT; w.pressV = 0; }
     }
     const s = 1 - 0.03 * w.press;
-    if (Math.abs(s - w.lastS) > 1e-4) { w.el.style.transform = s === 1 ? '' : 'scale(' + s.toFixed(4) + ')'; w.lastS = s; }
+    if (EX.w !== w && Math.abs(s - w.lastS) > 1e-4) { w.el.style.transform = 'scale(' + s.toFixed(4) + ')'; w.lastS = s; }   // (the zooming widget's transform belongs to the transition)
     if (w.press > pressAmt) { pressAmt = w.press; pressSlot = w.slot; }
   }
   // hero parallax, compact title, page push-back while a sheet is open
@@ -242,7 +242,9 @@ function uiUpdate(dt) {
     let ww = w.w * ps, hh = w.h * ps;
     let x = w.x + (w.w - ww) / 2, yy = w.y - y + (w.inHero ? heroShift : 0) + (w.h - hh) / 2;
     x = (1 - s) * cx + s * x; yy = (1 - s) * cy + s * yy; ww *= s; hh *= s;
-    let m = (w.inHero ? heroAlpha : 1) * (EX.w === w ? 1 - EX.hide : 1);
+    // while it zooms, the widget's own glass is off: the sheet slot is drawn with exactly
+    // its material at rest, so the swap at either end of the transition is invisible
+    let m = (w.inHero ? heroAlpha : 1) * (EX.w === w ? 0 : 1);
     if (yy + hh < -30 || yy > cssH + 30) m = 0;
     RECT[o] = (x + ww / 2) * kx; RECT[o + 1] = ch - (yy + hh / 2) * ky; RECT[o + 2] = ww / 2 * kx; RECT[o + 3] = hh / 2 * ky;
     RECTP[o] = w.r * ps * s * kx; RECTP[o + 1] = m; RECTP[o + 2] = w.thick; RECTP[o + 3] = w.seed;
@@ -251,7 +253,7 @@ function uiUpdate(dt) {
     const o = SHEET_SLOT * 4, e = EX.s;
     if (EX.active) {
       RECT[o] = (e[0] + e[2] / 2) * kx; RECT[o + 1] = ch - (e[1] + e[3] / 2) * ky; RECT[o + 2] = e[2] / 2 * kx; RECT[o + 3] = e[3] / 2 * ky;
-      RECTP[o] = e[4] * kx; RECTP[o + 1] = sstep(0, 0.12, EX.prog) * EX.fade; RECTP[o + 2] = clamp(EX.prog, 0, 1); RECTP[o + 3] = 0.77;
+      RECTP[o] = e[4] * kx; RECTP[o + 1] = EX.fade; RECTP[o + 2] = lerp(EX.w ? EX.w.thick : 0.2, 1, clamp(EX.prog, 0, 1)); RECTP[o + 3] = 0.77;
     } else RECTP[o + 1] = 0;
   }
   PRESS[0] = pressX * kx; PRESS[1] = ch - pressY * ky; PRESS[2] = pressAmt; PRESS[3] = pressSlot;
@@ -270,7 +272,7 @@ function uiBusy() { return SC.mode !== 0 || EX.active || CS.on || (pressW && pre
    ============================================================================= */
 const EX = { active: false, open: false, w: null, s: new Float32Array(5), v: new Float32Array(5), t: new Float32Array(5),
   src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '',
-  ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0 };
+  ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0, cleanup: 0, rest: false };
 // sheet springs (response s, damping ratio): open and close are critically damped
 // or nearly so — the zoom lands without wobble; a throw back up keeps a little life
 const SP_OPEN = [0.40, 0.9], SP_CLOSE = [0.36, 0.96], SP_BACK = [0.32, 0.82];
@@ -282,11 +284,15 @@ function measureSafe() {
   const sp = $('safe'); safeT = sp.offsetHeight || 0; safeB = parseFloat(getComputedStyle(sp).paddingBottom) || 0;
   safeL = px('--sal'); safeR = px('--sar');
 }
+// the widget as it is on screen right now, including the press scale (so the zoom
+// starts exactly where the pressed card is — no jump on the first frame)
 function widgetScreenRect(w, out) {
-  out[0] = w.x; out[1] = w.y - SC.y + (w.inHero ? heroShift : 0); out[2] = w.w; out[3] = w.h; out[4] = w.r;
+  const ps = 1 - 0.03 * w.press;
+  out[2] = w.w * ps; out[3] = w.h * ps; out[4] = w.r * ps;
+  out[0] = w.x + (w.w - out[2]) / 2; out[1] = w.y - SC.y + (w.inHero ? heroShift : 0) + (w.h - out[3]) / 2;
 }
 function openDetail(w) {
-  if (EX.open || !DATA) return;
+  if (EX.open || !DATA || (EX.active && EX.w !== w)) return;
   for (const k in CH) delete CH[k];
   const d = renderDetail(w.key);
   if (!d) return;
@@ -303,7 +309,11 @@ function openDetail(w) {
   if (!EX.active) { EX.s.set(calm ? dst : EX.src); EX.v.fill(0); EX.fade = calm ? 0 : 1; }
   EX.t.set(dst); EX.w = w; EX.open = true; EX.active = true; EX.resp = SP_OPEN[0]; EX.zeta = SP_OPEN[1];
   EX.lastT = ''; EX.fresh = 2;           // building the sheet is one long frame: don't let the springs jump over it
+  clearTimeout(EX.cleanup);
+  EX.w.el.style.transformOrigin = '0 0';
+  syncTouchAction();
   void dp.offsetHeight;                  // lay it out now, in the tap, not in the first animated frame
+  expandUpdate(0);                       // and write frame 0 now, so nothing shows a stale state
   detail.classList.add('on', 'live'); detail.setAttribute('aria-hidden', 'false');
   try { history.pushState({ ciel: 'detail' }, ''); } catch (e) { }
   if (d.after) requestAnimationFrame(d.after);
@@ -342,19 +352,32 @@ function expandUpdate(dt) {
     dp.style.transform = tf;
     dpi.style.transform = 'scale(1,' + (sx / sy).toFixed(5) + ')';
     dp.style.borderRadius = (s[4] / sx).toFixed(1) + 'px/' + (s[4] / sy).toFixed(1) + 'px';
-    const co = sstep(0.32, 0.85, p).toFixed(3);
+    const co = sstep(0.15, 0.6, p).toFixed(3);
     dh.style.opacity = co; db.style.opacity = co;
-    EX.w.el.style.opacity = (1 - sstep(0, 0.3, p)).toFixed(3);
+    // the widget's own content rides inside the moving glass (FLIP: a transform from its
+    // layout box to the rectangle on screen), so on the way back it lands with the glass
+    // instead of popping in at its final place while the glass is still flying
+    const w = EX.w, ps = PUSH, ccx = cssW / 2, ccy = cssH / 2;
+    const bx = (1 - ps) * ccx + ps * w.x, by = (1 - ps) * ccy + ps * (w.y - SC.y + (w.inHero ? heroShift : 0)), bw = ps * w.w;
+    w.el.style.transform = 'translate3d(' + ((s[0] - bx) / ps).toFixed(2) + 'px,' + ((s[1] - by) / ps).toFixed(2) + 'px,0) scale(' + (s[2] / bw).toFixed(5) + ')';
+    w.el.style.opacity = (1 - sstep(0, 0.2, p)).toFixed(3);
     EX.lastT = key;
   }
+  let still = !EX.drag;
+  for (let i = 0; i < 5 && still; i++) if (Math.abs(v[i]) > 1 || Math.abs(s[i] - t[i]) > 0.5) still = false;
+  EX.rest = EX.open && still;
   if (!EX.open) {
     let done = true;
     for (let i = 0; i < 5; i++) if (Math.abs(s[i] - t[i]) > 0.5 || Math.abs(v[i]) > 6) done = false;
     if (calm) done = EX.fade <= 0;
     if (done) {
-      EX.active = false; detail.classList.remove('on');
-      EX.w.el.style.opacity = ''; EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
-      db.innerHTML = ''; CS.c = null;
+      EX.active = false; EX.rest = false; detail.classList.remove('on');
+      const w = EX.w;
+      w.el.style.opacity = '1'; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press;
+      EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
+      CS.c = null;
+      // tearing the sheet's DOM down is a long task: never on the frame the transition lands
+      EX.cleanup = setTimeout(() => { if (!EX.active) db.innerHTML = ''; }, 600);
     }
   }
 }
@@ -403,49 +426,62 @@ dh.addEventListener('pointerdown', e => {
 dh.addEventListener('pointermove', e => { if (EX.drag) dragMove(e.clientY, e.timeStamp); });
 dh.addEventListener('pointerup', e => dragEnd(e.timeStamp));
 dh.addEventListener('pointercancel', e => dragEnd(e.timeStamp));
-// body: decide on the very first move (while it can still be cancelled): pulling
-// down from the top of the scroll takes the sheet, anything else scrolls natively
-let bt = null;
-db.addEventListener('touchstart', e => {
-  bt = (!EX.open || e.touches.length > 1) ? null : { x: e.touches[0].clientX, y: e.touches[0].clientY, top: db.scrollTop <= 0, mode: 0 };
-}, { passive: true });
-db.addEventListener('touchmove', e => {
-  if (!bt) return;
-  const p = e.touches[0], dx = p.clientX - bt.x, dy = p.clientY - bt.y;
-  if (bt.mode === 0) {
-    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
-    if (bt.top && dy > 0 && dy >= Math.abs(dx) && !CS.on) { bt.mode = 1; dragStart(bt.y, e.timeStamp); }
-    else bt.mode = 2;
+// body: no blocking touch listener (it would make every scroll wait for JS). At the
+// top of its scroll the body is `touch-action: pan-down`: the browser only scrolls for
+// gestures that start upward, and a pull downward arrives here as pointer events —
+// the sheet follows it. Anywhere else it is a plain native scroller.
+function syncTouchAction() { const ta = db.scrollTop <= 0 ? 'pan-down' : 'pan-y'; if (db.style.touchAction !== ta) db.style.touchAction = ta; }
+db.addEventListener('scroll', syncTouchAction, { passive: true });
+let bp = null;
+db.addEventListener('pointerdown', e => {
+  bp = EX.open ? { id: e.pointerId, x: e.clientX, y: e.clientY, top: db.scrollTop <= 0, mode: 0 } : null;
+});
+db.addEventListener('pointermove', e => {
+  if (!bp || e.pointerId !== bp.id) return;
+  const dx = e.clientX - bp.x, dy = e.clientY - bp.y;
+  if (bp.mode === 0) {
+    if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+    if (bp.top && dy > 0 && dy >= Math.abs(dx) && !CS.on) {
+      bp.mode = 1; dragStart(bp.y, e.timeStamp);
+      try { db.setPointerCapture(e.pointerId); } catch (err) { }
+    } else bp.mode = 2;
   }
-  if (bt.mode === 1) { if (e.cancelable) e.preventDefault(); dragMove(p.clientY, e.timeStamp); }
-}, { passive: false });
-const bodyEnd = e => { if (bt && bt.mode === 1) dragEnd(e.timeStamp); bt = null; };
-db.addEventListener('touchend', bodyEnd);
-db.addEventListener('touchcancel', bodyEnd);
+  if (bp.mode === 1) dragMove(e.clientY, e.timeStamp);
+});
+const bodyEnd = e => { if (bp && e.pointerId === bp.id && bp.mode === 1) dragEnd(e.timeStamp); if (bp && e.pointerId === bp.id) bp = null; };
+db.addEventListener('pointerup', bodyEnd);
+db.addEventListener('pointercancel', bodyEnd);
 
 /* =============================================================================
    Hero, 48 h card, 7 days, tiles
+   Writes are diffed: rewriting identical HTML still tears down and re-rasterises
+   every icon in it (a visible flicker if it lands during a transition).
    ============================================================================= */
+function setHTML(el, html) { if (el._h !== html) { el.innerHTML = html; el._h = html; } }
+function setText(el, t) { t = String(t); if (el.textContent !== t) el.textContent = t; }
 let heroCol = 0;
 function renderHero() {
   sampleAt(colS[heroCol] || 0, H);
-  $('cityName').textContent = LOC ? (LOC.name || STR.myLoc) : '…';
+  setText($('cityName'), LOC ? (LOC.name || STR.myLoc) : '…');
   $('city').classList.toggle('gps', !!(LOC && LOC.src === 'gps'));
   const when = $('when'), whenWas = when.hidden;
   when.hidden = heroCol === 0;
-  if (heroCol) $('whenT').textContent = dayName(H.t) + ' ' + fmt(fmtHour, H.t);
+  if (heroCol) setText($('whenT'), dayName(H.t) + ' ' + fmt(fmtHour, H.t));
   if (!DATA) { if (when.hidden !== whenWas && WG.length) measureWidgets(); return; }
-  $('tempN').textContent = fT(H.temp);
-  $('cond').textContent = WMO[H.code] || '';
+  setText($('tempN'), fT(H.temp));
+  setText($('cond'), WMO[H.code] || '');
   const di = dayIndex(H.t), d = DATA.daily;
-  $('hl').textContent = di >= 0 ? fT(d.temperature_2m_max[di]) + '° / ' + fT(d.temperature_2m_min[di]) + '°' : '';
-  const mini = $('mini'), ms = document.createElement('span');
-  ms.textContent = fT(H.temp) + '°';
-  const mc = document.createElement('span'); mc.className = 'c'; mc.textContent = WMO[H.code] || '';
-  mini.textContent = LOC ? (LOC.name || STR.myLoc) : ''; mini.append(ms, mc);
-  $('hNote').textContent = H.pp >= 10 ? STR.precip + ' ' + Math.round(H.pp) + ' %' : '';
+  setText($('hl'), di >= 0 ? fT(d.temperature_2m_max[di]) + '° / ' + fT(d.temperature_2m_min[di]) + '°' : '');
+  const mini = $('mini'), mk = (LOC ? (LOC.name || STR.myLoc) : '') + '|' + fT(H.temp) + '|' + (WMO[H.code] || '');
+  if (mini._k !== mk) {
+    mini._k = mk;
+    const ms = document.createElement('span'); ms.textContent = fT(H.temp) + '°';
+    const mc = document.createElement('span'); mc.className = 'c'; mc.textContent = WMO[H.code] || '';
+    mini.textContent = LOC ? (LOC.name || STR.myLoc) : ''; mini.append(ms, mc);
+  }
+  setText($('hNote'), H.pp >= 10 ? STR.precip + ' ' + Math.round(H.pp) + ' %' : '');
   const aqi = $('aqi'), wasHidden = aqi.hidden;
-  if (AQ && AQ.aqi != null) { aqi.hidden = false; $('aqiT').textContent = STR.aqi + ' ' + Math.round(AQ.aqi); } else aqi.hidden = true;
+  if (AQ && AQ.aqi != null) { aqi.hidden = false; setText($('aqiT'), STR.aqi + ' ' + Math.round(AQ.aqi)); } else aqi.hidden = true;
   renderTiles();
   // the AQI pill's glass follows the pill as the scrub pill appears / changes width
   // (one layout read per hour tick — never per frame)
@@ -557,7 +593,7 @@ function renderDays() {
       '<span class="rbar"><i style="left:' + left + '%;width:' + width + '%;background:linear-gradient(90deg,' + tColor(lo) + ',' + tColor(hi) + ')"></i>' + dot + '</span>' +
       '<span class="hi">' + fT(hi) + '°</span></div>';
   }
-  $('wDays').innerHTML = html;
+  setHTML($('wDays'), html);
 }
 
 function arcPath(cx, cy, r, a0, a1) {
@@ -601,27 +637,27 @@ function renderTiles() {
   if (!DATA) return;
   // UV
   const uv = Math.max(0, H.uv);
-  $('tUV').innerHTML = '<h3 class="wh">' + sym('uv') + '<span>' + STR.uvT + '</span></h3><div class="v">' + STR.uv[uvLevel(uv)] + '</div>' + uvGauge(uv);
+  setHTML($('tUV'), '<h3 class="wh">' + sym('uv') + '<span>' + STR.uvT + '</span></h3><div class="v">' + STR.uv[uvLevel(uv)] + '</div>' + uvGauge(uv));
   // wind
   const w = fW(H.wspd);
-  $('tWind').innerHTML = '<h3 class="wh">' + sym('wind') + '<span>' + STR.wind + '</span></h3><div class="v">' + w[0] + '<small>' + w[1] + '</small></div><div class="s">' + STR.dirsL[dir8(H.wdir)] + '</div>' + compass(H.wdir);
+  setHTML($('tWind'), '<h3 class="wh">' + sym('wind') + '<span>' + STR.wind + '</span></h3><div class="v">' + w[0] + '<small>' + w[1] + '</small></div><div class="s">' + STR.dirsL[dir8(H.wdir)] + '</div>' + compass(H.wdir));
   // sun
   const si = sunInfo(H.t);
-  $('tSun').innerHTML = '<h3 class="wh">' + sym('sunrise') + '<span>' + (si ? si.evL : STR.rise) + '</span></h3><div class="v">' + (si ? fmt(fmtHour, si.evT) : '–') + '</div>' +
-    (si ? '<svg class="g wide" viewBox="0 0 106 64">' + sunArc(si, 106, 54) + '<g font-size="8.5" fill="rgba(255,255,255,.65)" text-anchor="middle"><text x="12" y="63">' + fmt(fmtHour, si.rise) + '</text><text x="94" y="63">' + fmt(fmtHour, si.set) + '</text></g></svg>' : '');
+  setHTML($('tSun'), '<h3 class="wh">' + sym('sunrise') + '<span>' + (si ? si.evL : STR.rise) + '</span></h3><div class="v">' + (si ? fmt(fmtHour, si.evT) : '–') + '</div>' +
+    (si ? '<svg class="g wide" viewBox="0 0 106 64">' + sunArc(si, 106, 54) + '<g font-size="8.5" fill="rgba(255,255,255,.65)" text-anchor="middle"><text x="12" y="63">' + fmt(fmtHour, si.rise) + '</text><text x="94" y="63">' + fmt(fmtHour, si.set) + '</text></g></svg>' : ''));
   // feels like
   const dlt = H.app - H.temp;
-  $('tFeels').innerHTML = '<h3 class="wh">' + sym('therm') + '<span>' + STR.feels + '</span></h3><div class="v">' + fT(H.app) + '°</div><div class="s">' + (dlt < -1.5 ? STR.feelsColder : dlt > 1.5 ? STR.feelsWarmer : STR.feelsSame) + '</div>';
+  setHTML($('tFeels'), '<h3 class="wh">' + sym('therm') + '<span>' + STR.feels + '</span></h3><div class="v">' + fT(H.app) + '°</div><div class="s">' + (dlt < -1.5 ? STR.feelsColder : dlt > 1.5 ? STR.feelsWarmer : STR.feelsSame) + '</div>');
   // humidity
   const hum = clamp(H.hum, 0, 100);
-  $('tHum').innerHTML = '<h3 class="wh">' + sym('drop') + '<span>' + STR.hum + '</span></h3><div class="v">' + Math.round(hum) + '<small>%</small></div><div class="s">' + STR.dew + ' ' + fT(H.dew) + '°</div>' +
-    '<svg class="g" viewBox="0 0 76 76"><rect x="30" y="8" width="16" height="60" rx="8" fill="rgba(255,255,255,.12)"/><rect x="30" y="' + (8 + 60 * (1 - hum / 100)).toFixed(1) + '" width="16" height="' + (60 * hum / 100).toFixed(1) + '" rx="8" fill="#7cc4ff"/></svg>';
+  setHTML($('tHum'), '<h3 class="wh">' + sym('drop') + '<span>' + STR.hum + '</span></h3><div class="v">' + Math.round(hum) + '<small>%</small></div><div class="s">' + STR.dew + ' ' + fT(H.dew) + '°</div>' +
+    '<svg class="g" viewBox="0 0 76 76"><rect x="30" y="8" width="16" height="60" rx="8" fill="rgba(255,255,255,.12)"/><rect x="30" y="' + (8 + 60 * (1 - hum / 100)).toFixed(1) + '" width="16" height="' + (60 * hum / 100).toFixed(1) + '" rx="8" fill="#7cc4ff"/></svg>');
   // pressure
   sampleAt((colS[heroCol] || 0) + 3, TMP);
   const trd = TMP.pres - H.pres, pa = GA0 + (GA1 - GA0) * clamp((H.pres - 960) / 100, 0, 1);
-  $('tPres').innerHTML = '<h3 class="wh">' + sym('gauge') + '<span>' + STR.pres + '</span></h3><div class="v">' + Math.round(H.pres) + '<small>hPa</small></div><div class="s">' + (trd > 0.6 ? STR.up : trd < -0.6 ? STR.down : STR.steady) + '</div>' +
+  setHTML($('tPres'), '<h3 class="wh">' + sym('gauge') + '<span>' + STR.pres + '</span></h3><div class="v">' + Math.round(H.pres) + '<small>hPa</small></div><div class="s">' + (trd > 0.6 ? STR.up : trd < -0.6 ? STR.down : STR.steady) + '</div>' +
     '<svg class="g" viewBox="0 0 76 76"><path d="' + arcPath(38, 40, 28, GA0, GA1) + '" stroke="rgba(255,255,255,.18)" stroke-width="6" fill="none" stroke-linecap="round" stroke-dasharray="1.2 3.2"/>' +
-    '<line x1="38" y1="40" x2="' + (38 + Math.cos(pa) * 24).toFixed(1) + '" y2="' + (40 + Math.sin(pa) * 24).toFixed(1) + '" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><circle cx="38" cy="40" r="3.5" fill="#fff"/></svg>';
+    '<line x1="38" y1="40" x2="' + (38 + Math.cos(pa) * 24).toFixed(1) + '" y2="' + (40 + Math.sin(pa) * 24).toFixed(1) + '" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><circle cx="38" cy="40" r="3.5" fill="#fff"/></svg>');
 }
 
 /* =============================================================================
@@ -1085,7 +1121,8 @@ function boot() {
   }, 60000);
   installManifest();
   registerSW();
-  window.ciel = { CONFIG, P, T, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, s: Array.from(EX.s).map(v => +v.toFixed(1)) }; },
+  window.ciel = { CONFIG, P, T, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, prog: EX.prog, dim: UI_DIM, s: Array.from(EX.s).map(v => +v.toFixed(1)) }; },
+    step: dt => { uiUpdate(dt); if (gl) { update(dt); render(dt); } },   // deterministic stepping for frame-by-frame tests
     // self-check of the celestial frame: the sun's RA/dec recovered from the local→equatorial matrix vs. the ephemeris
     sky: () => { const e = [0, 1, 2].map(i => EQM[i] * SUND[0] + EQM[3 + i] * SUND[1] + EQM[6 + i] * SUND[2]); return { ra: Math.atan2(e[1], e[0]), dec: Math.asin(e[2]), sra: A.sra, sdec: A.sdec }; } };
 }
