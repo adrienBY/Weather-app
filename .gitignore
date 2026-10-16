@@ -1,0 +1,6 @@
+node_modules/
+android/
+*.apk
+assets/.cache/
+www/index.html
+.DS_Store
