@@ -501,6 +501,9 @@ function sizeClouds() {
   fillFrames = 3;
 }
 function governor(now, ms) {
+  // never resize mid-gesture or mid-transition: a resize reallocates every buffer (a
+  // hitch) and restarts the cloud history (a flicker) right when motion is most visible
+  if (EX.active || SC.mode !== 0 || CS.on || scrubbing) { underSince = 0; return; }
   emaMs = emaMs ? emaMs + (ms - emaMs) * 0.08 : ms;
   if (now - lastStep < 700) return;
   const q = CONFIG.quality;
@@ -736,7 +739,13 @@ function render(dt) {
   const deck = sstep(0.25, 0.6, strat);
   const top = deck > 0.5 ? 1 : (deck < 0.35 ? CONFIG.sky.bankTop : BAND[1]);
   if (top !== BAND[1]) { BAND[1] = top; sizeClouds(); }
-  if (cov > 0.008 && texShape) {
+  // under a sheet that is zooming, being dragged or resting, the clouds are only seen
+  // dimmed through a heavy blur: keep the last traced clouds and give the frame budget
+  // to the transition. Live again as soon as the sky has to follow a scrub, and from
+  // the last third of the way back, so the history has converged when the sheet lands
+  const freeze = EX.active && EX.prog > 0.35 && !scrubbing && !CS.on && cloudsOn;
+  if (freeze) { /* history kept as it is */ }
+  else if (cov > 0.008 && texShape) {
     cloudsOn = true;
     const j = (frameNo & 3) * 2, jx = JIT[j], jy = JIT[j + 1];
     toRT(cFresh); gl.useProgram(PR.clouds); let u = UL.clouds;
@@ -782,42 +791,46 @@ function render(dt) {
     }
     glassDirty = dropsAlive > 0;
   }
-  // 5. sky → texture
-  toRT(skyT); gl.useProgram(PR.sky); let u = UL.sky;
-  bindTex(0, gl.TEXTURE_2D, texNoise); bindTex(1, gl.TEXTURE_2D, fieldT[fieldIdx].t);
-  bindTex(2, gl.TEXTURE_2D, cHist[histIdx].t); bindTex(3, gl.TEXTURE_2D, glassT.t);
-  bindTex(4, gl.TEXTURE_2D, transT.t); bindTex(5, gl.TEXTURE_2D, skySunT.t); bindTex(6, gl.TEXTURE_2D, skyMoonT.t); bindTex(7, gl.TEXTURE_2D, texMilky || texBlack);
-  gl.uniform1i(u.uNoise, 0); gl.uniform1i(u.uField, 1); gl.uniform1i(u.uClouds, 2); gl.uniform1i(u.uGlass, 3);
-  gl.uniform1i(u.uTrans, 4); gl.uniform1i(u.uSkyS, 5); gl.uniform1i(u.uSkyM, 6); gl.uniform1i(u.uMilky, 7);
-  gl.uniform2f(u.uRes, cw, ch); gl.uniform1f(u.uTime, skyClock);
-  gl.uniform3fv(u.uCamF, CAMF); gl.uniform3fv(u.uCamU, CAMU); gl.uniform3fv(u.uCamR, CAMR); gl.uniform2fv(u.uTan, CTAN);
-  gl.uniformMatrix3fv(u.uEqRot, false, EQM); gl.uniformMatrix3fv(u.uGalRot, false, GALM);
-  gl.uniform3fv(u.uLight, LGT); gl.uniform1f(u.uExposure, CONFIG.sky.exposure); gl.uniform3f(u.uNight, NIGHT[0], NIGHT[1], NIGHT[2]);
-  gl.uniform3fv(u.uSunDir, SUND); gl.uniform3fv(u.uMoonDir, MOOND); gl.uniform3fv(u.uMoonR, MOONR); gl.uniform3fv(u.uMoonU, MOONU);
-  gl.uniform4f(u.uSun, sunVis, sunE, 0, 0); gl.uniform4f(u.uMoon, moonVis, A.moonFrac, 0, 0); gl.uniform3f(u.uMoonL, moonLx, 0, moonLz);
-  gl.uniform4f(u.uDrift2, dHx, dHy, evX, evY); gl.uniform2f(u.uBand, BAND[0], BAND[1]);
-  gl.uniform3f(u.uEye, (calm ? 0 : tiltX) * 0.12, (calm ? 0 : -tiltY) * 0.07, camYaw + (calm ? 0 : tiltX) * 0.035);
-  gl.uniform4f(u.uCloud, clamp(P[I_CL], 0, 1), clamp(P[I_CM], 0, 1), clamp(P[I_CH], 0, 1), clamp(P[I_DARK], 0, 1));
-  gl.uniform4f(u.uWx, clamp(P[I_RAIN], 0, 1), clamp(P[I_SNOW], 0, 1), clamp(P[I_FOG], 0, 1), clamp(P[I_STORM], 0, 1));
-  gl.uniform4f(u.uWind, clamp(P[I_WX] * 0.4, -0.55, 0.55), clamp(P[I_WX] * 0.15, -0.3, 0.3), P[I_WS], 0);
-  gl.uniform4f(u.uFlash, flashX, flashY, flashI, boltOn); gl.uniform2f(u.uBolt, boltX, boltSeed);
-  gl.uniform4fv(u.uRip, RIP); gl.uniform4fv(u.uW, WTS);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-  // 6. the material's blur: dual-Kawase ½ → 1/32 and back up to ¼ (a ~30 pt radius)
-  gl.useProgram(PR.down); u = UL.down; gl.uniform1i(u.uSrc, 0);
-  let srcT = skyT;
-  for (let k = 0; k < 5; k++) {
-    const dst = BDN[k];                                // preallocated chain: no per-frame arrays
-    toRT(dst); bindTex(0, gl.TEXTURE_2D, srcT.t);
-    gl.uniform2f(u.uDst, dst.w, dst.h); gl.uniform2f(u.uTex, 1 / srcT.w, 1 / srcT.h);
-    gl.drawArrays(gl.TRIANGLES, 0, 3); srcT = dst;
-  }
-  gl.useProgram(PR.up); u = UL.up; gl.uniform1i(u.uSrc, 0);
-  for (let k = 0; k < 3; k++) {
-    const dst = BUP[k];
-    toRT(dst); bindTex(0, gl.TEXTURE_2D, srcT.t);
-    gl.uniform2f(u.uDst, dst.w, dst.h); gl.uniform2f(u.uTex, 1 / srcT.w, 1 / srcT.h);
-    gl.drawArrays(gl.TRIANGLES, 0, 3); srcT = dst;
+  // 5. sky → texture — behind a sheet at rest only its blur shows: every other frame is enough
+  const reuse = EX.rest && !scrubbing && !CS.on && (frameNo & 1);
+  let u;
+  if (!reuse) {
+    toRT(skyT); gl.useProgram(PR.sky); u = UL.sky;
+    bindTex(0, gl.TEXTURE_2D, texNoise); bindTex(1, gl.TEXTURE_2D, fieldT[fieldIdx].t);
+    bindTex(2, gl.TEXTURE_2D, cHist[histIdx].t); bindTex(3, gl.TEXTURE_2D, glassT.t);
+    bindTex(4, gl.TEXTURE_2D, transT.t); bindTex(5, gl.TEXTURE_2D, skySunT.t); bindTex(6, gl.TEXTURE_2D, skyMoonT.t); bindTex(7, gl.TEXTURE_2D, texMilky || texBlack);
+    gl.uniform1i(u.uNoise, 0); gl.uniform1i(u.uField, 1); gl.uniform1i(u.uClouds, 2); gl.uniform1i(u.uGlass, 3);
+    gl.uniform1i(u.uTrans, 4); gl.uniform1i(u.uSkyS, 5); gl.uniform1i(u.uSkyM, 6); gl.uniform1i(u.uMilky, 7);
+    gl.uniform2f(u.uRes, cw, ch); gl.uniform1f(u.uTime, skyClock);
+    gl.uniform3fv(u.uCamF, CAMF); gl.uniform3fv(u.uCamU, CAMU); gl.uniform3fv(u.uCamR, CAMR); gl.uniform2fv(u.uTan, CTAN);
+    gl.uniformMatrix3fv(u.uEqRot, false, EQM); gl.uniformMatrix3fv(u.uGalRot, false, GALM);
+    gl.uniform3fv(u.uLight, LGT); gl.uniform1f(u.uExposure, CONFIG.sky.exposure); gl.uniform3f(u.uNight, NIGHT[0], NIGHT[1], NIGHT[2]);
+    gl.uniform3fv(u.uSunDir, SUND); gl.uniform3fv(u.uMoonDir, MOOND); gl.uniform3fv(u.uMoonR, MOONR); gl.uniform3fv(u.uMoonU, MOONU);
+    gl.uniform4f(u.uSun, sunVis, sunE, 0, 0); gl.uniform4f(u.uMoon, moonVis, A.moonFrac, 0, 0); gl.uniform3f(u.uMoonL, moonLx, 0, moonLz);
+    gl.uniform4f(u.uDrift2, dHx, dHy, evX, evY); gl.uniform2f(u.uBand, BAND[0], BAND[1]);
+    gl.uniform3f(u.uEye, (calm ? 0 : tiltX) * 0.12, (calm ? 0 : -tiltY) * 0.07, camYaw + (calm ? 0 : tiltX) * 0.035);
+    gl.uniform4f(u.uCloud, clamp(P[I_CL], 0, 1), clamp(P[I_CM], 0, 1), clamp(P[I_CH], 0, 1), clamp(P[I_DARK], 0, 1));
+    gl.uniform4f(u.uWx, clamp(P[I_RAIN], 0, 1), clamp(P[I_SNOW], 0, 1), clamp(P[I_FOG], 0, 1), clamp(P[I_STORM], 0, 1));
+    gl.uniform4f(u.uWind, clamp(P[I_WX] * 0.4, -0.55, 0.55), clamp(P[I_WX] * 0.15, -0.3, 0.3), P[I_WS], 0);
+    gl.uniform4f(u.uFlash, flashX, flashY, flashI, boltOn); gl.uniform2f(u.uBolt, boltX, boltSeed);
+    gl.uniform4fv(u.uRip, RIP); gl.uniform4fv(u.uW, WTS);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    // 6. the material's blur: dual-Kawase ½ → 1/32 and back up to ¼ (a ~30 pt radius)
+    gl.useProgram(PR.down); u = UL.down; gl.uniform1i(u.uSrc, 0);
+    let srcT = skyT;
+    for (let k = 0; k < 5; k++) {
+      const dst = BDN[k];                                // preallocated chain: no per-frame arrays
+      toRT(dst); bindTex(0, gl.TEXTURE_2D, srcT.t);
+      gl.uniform2f(u.uDst, dst.w, dst.h); gl.uniform2f(u.uTex, 1 / srcT.w, 1 / srcT.h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3); srcT = dst;
+    }
+    gl.useProgram(PR.up); u = UL.up; gl.uniform1i(u.uSrc, 0);
+    for (let k = 0; k < 3; k++) {
+      const dst = BUP[k];
+      toRT(dst); bindTex(0, gl.TEXTURE_2D, srcT.t);
+      gl.uniform2f(u.uDst, dst.w, dst.h); gl.uniform2f(u.uTex, 1 / srcT.w, 1 / srcT.h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3); srcT = dst;
+    }
   }
   // 7. widget material → screen
   toRT(null); gl.useProgram(PR.final); u = UL.final;
