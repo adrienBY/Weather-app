@@ -109,7 +109,7 @@ function releaseVelocity(now) {   // px/s over the last ~90 ms of samples
   return dt > 0.004 ? (SC.hy[SC.hn - 1] - SC.hy[i]) / dt : 0;
 }
 let pressW = null, pressX = 0, pressY = 0;
-function releasePress() { if (pressW) pressW.pressT = 0; }
+function releasePress() { if (pressW) pressW.pressT = 0; MF.down = false; }
 vp.addEventListener('pointerdown', e => {
   if (EX.active) return;
   markInteraction(); enableTilt();
@@ -194,6 +194,7 @@ function measureWidgets() {
   heroH = heroEl.offsetHeight || 600;
   contentH = content.offsetHeight;
   SC.max = Math.max(0, contentH - cssH);
+  if (MF.items.length) measureMorph();
 }
 let lastCT = '', lastHT = '', lastHO = '', lastBar = '';
 function uiUpdate(dt) {
@@ -233,6 +234,7 @@ function uiUpdate(dt) {
     const fade = (1 - sstep(0, 0.5, UI_DIM)).toFixed(3);
     content.style.transform = ct; content.style.opacity = fade; bar.style.opacity = fade; lastCT = ck;
   }
+  morphUpdate(dt, y, s, 1 - sstep(0, 0.5, UI_DIM));
   // glass slots
   const kx = cw / cssW, ky = ch / cssH;
   for (let i = 0; i < SHEET_SLOT; i++) {
@@ -262,6 +264,127 @@ function uiUpdate(dt) {
   LIGHT_X = lx / ll; LIGHT_Y = ly / ll;
 }
 function uiBusy() { return SC.mode !== 0 || EX.active || CS.on || (pressW && pressW.press > 0.001); }
+
+/* =============================================================================
+   Shared-element morphs ("matched geometry"). When the same information is
+   shown in two places, it travels from one to the other instead of fading out
+   here and in there:
+     • scrolling: the hero's city, temperature and condition fly up into the
+       compact title of the top bar (and back down)
+     • opening a widget: its title and its main value fly into the sheet's
+       title and big number (and back on the way out)
+   Both copies follow one interpolated rectangle — left edge, vertical centre,
+   scale (geometric) — and cross-fade on the way, so a light 170 px numeral can
+   become a 17 px semibold one without a pop. Everything is scroll- or spring-
+   driven: it tracks the finger, reverses, and can be grabbed mid-way.
+   ============================================================================= */
+const MF = { layer: null, items: [], key: '', lk: '', down: false, downIt: null, dv: 0 };
+function setupMorph() {
+  const layer = document.createElement('div'); layer.id = 'morph'; layer.setAttribute('aria-hidden', 'true');
+  document.body.insertBefore(layer, bar);
+  const mini = $('mini'); mini.textContent = '';
+  const mk = (src, cls) => {
+    const c = document.createElement('div'); c.className = 'mf ' + cls; layer.append(c);
+    const d = document.createElement('span'); d.className = cls; mini.append(d);
+    return { src, clone: c, dst: d, sx: 0, sy: 0, cw: 0, ch: 0, dx: 0, dy: 0, dh: 0, k: 1, ft: '', fo: '', tt: '', to: '' };
+  };
+  // the originals stay in the page, invisible: they hold the layout and still take the taps
+  MF.items = [mk($('cityName'), 'n'), mk($('temp'), 't'), mk($('cond'), 'c')];
+  MF.layer = layer;
+  setHTML(MF.items[1].clone, '--<i>°</i>');
+  document.body.classList.add('mf-on');
+  $('city').addEventListener('pointerdown', () => { MF.down = true; MF.downIt = MF.items[0]; });
+  $('temp').addEventListener('pointerdown', () => { MF.down = true; MF.downIt = MF.items[1]; });
+  addEventListener('pointerup', () => { MF.down = false; });
+  addEventListener('pointercancel', () => { MF.down = false; });
+}
+function heroText(i, t, html) {
+  const it = MF.items[i]; if (!it) return;
+  if (html) setHTML(it.clone, html); else setText(it.clone, t);
+  setText(it.dst, t);
+}
+function measureMorph() {
+  for (const it of MF.items) {
+    let x = 0, y = 0, n = it.src;
+    while (n && n !== content) { x += n.offsetLeft; y += n.offsetTop; n = n.offsetParent; }
+    it.sx = x; it.sy = y;                                     // where the original sits at rest (screen, unscrolled)
+    it.cw = it.clone.offsetWidth; it.ch = it.clone.offsetHeight;
+    it.dx = it.dst.offsetLeft; it.dy = it.dst.offsetTop; it.dh = it.dst.offsetHeight;   // the bar is fixed at 0,0
+    it.k = (parseFloat(getComputedStyle(it.dst).fontSize) || 17) / (parseFloat(getComputedStyle(it.clone).fontSize) || 17);
+    it.ft = it.tt = '';
+  }
+}
+function morphUpdate(dt, y, s, fade) {
+  if (!MF.layer) return;
+  // the flying copies recede with the page when a sheet opens over it
+  const lk = s.toFixed(4) + fade.toFixed(3);
+  if (lk !== MF.lk) {
+    MF.layer.style.transform = s === 1 ? '' : 'translate(' + ((1 - s) * cssW / 2).toFixed(2) + 'px,' + ((1 - s) * cssH / 2).toFixed(2) + 'px) scale(' + s.toFixed(4) + ')';
+    MF.layer.style.opacity = fade < 1 ? fade.toFixed(3) : ''; MF.lk = lk;
+  }
+  // press feedback for the city and the temperature (their originals are invisible hit targets)
+  MF.dv += ((MF.down ? 1 : 0) - MF.dv) * (1 - Math.exp(-dt * (MF.down ? 45 : 16)));
+  if (!MF.down && MF.dv < 0.002) { MF.dv = 0; MF.downIt = null; }
+  const ymax = heroH * 0.5;
+  for (const it of MF.items) {
+    const scy = it.sy + it.ch / 2, dcy = it.dy + it.dh / 2;
+    // progress over a scroll distance chosen so the copy starts moving exactly with the
+    // page (ease-out: slope 1 at the start) and settles into the bar without a bump
+    const u = clamp(y / Math.max(1, Math.min(2 * (scy - dcy), ymax)), 0, 1);
+    let e, fx, fy, fs, tx = 0, ty = 0, ts = 1;
+    if (calm) {        // reduced motion: no flight — the copy stays with the page and cross-fades
+      e = u; fx = it.sx; fy = it.sy - y + heroShift; fs = 1;
+    } else {
+      e = 1 - (1 - u) * (1 - u);
+      const rx = lerp(it.sx, it.dx, e), rcy = lerp(scy, dcy, e) - Math.min(y, 0);
+      fs = Math.pow(it.k, e); ts = fs / it.k;
+      fx = rx; fy = rcy - fs * it.ch / 2;
+      tx = rx - it.dx; ty = rcy - ts * it.dh / 2 - it.dy;
+    }
+    let fo = 1 - sstep(0.35, 0.65, e);
+    if (MF.downIt === it && MF.dv > 0) { const q = 1 - 0.03 * MF.dv; fx += (1 - q) * fs * it.cw / 2; fy += (1 - q) * fs * it.ch / 2; fs *= q; fo *= 1 - 0.18 * MF.dv; }
+    const ft = 'translate(' + fx.toFixed(2) + 'px,' + fy.toFixed(2) + 'px) scale(' + fs.toFixed(4) + ')', fos = fo.toFixed(3);
+    const tt = calm ? '' : 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + ts.toFixed(4) + ')', tos = sstep(0.35, 0.65, e).toFixed(3);
+    if (ft !== it.ft) { it.clone.style.transform = ft; it.ft = ft; }
+    if (fos !== it.fo) { it.clone.style.opacity = fos; it.fo = fos; }
+    if (tt !== it.tt) { it.dst.style.transform = tt; it.tt = tt; }
+    if (tos !== it.to) { it.dst.style.opacity = tos; it.to = tos; }
+  }
+}
+// widget ↔ sheet: pairs of (element in the widget, element in the sheet), measured in each
+// one's own layout (both containers are uniform zooms anchored at the moving rectangle)
+const SMP = [];
+function sheetPairs(w) {
+  for (const q of SMP) q.b.style.transform = '';
+  SMP.length = 0;
+  if (calm || !activePane || !w) return;
+  const fz = el => parseFloat(getComputedStyle(el).fontSize) || 16;
+  const pair = (qa, fa, b, fb, bx, by) => {
+    const a = w.el.querySelector(qa); if (!a || !b) return;
+    SMP.push({ qa, b, ax: a.offsetLeft, ay: a.offsetTop, ah: a.offsetHeight, bx, by, bh: b.offsetHeight, k: fz(fb) / fz((fa && a.querySelector(fa)) || a) });
+  };
+  const dt = dh.querySelector('.dtitle');
+  pair('.wh', 'span', dt, $('dTitle'), dh.offsetLeft + dt.offsetLeft, dh.offsetTop + dt.offsetTop);
+  const big = activePane.el.querySelector('.big');
+  if (big) {
+    const by = db.offsetTop + activePane.el.offsetTop + big.offsetTop - db.scrollTop;
+    if (by + big.offsetHeight > db.offsetTop) pair('.v', null, big, big.querySelector('b') || big, db.offsetLeft + activePane.el.offsetLeft + big.offsetLeft, by);
+  }
+}
+function sheetPairsUpdate(p) {
+  if (!SMP.length) return;
+  const w = EX.w, s = EX.s, Zw = s[2] / w.w, Zs = s[2] / EX.dst[2];
+  for (const q of SMP) {
+    // where each copy is right now (on screen), and the rectangle they share at progress p
+    const al = s[0] + q.ax * Zw, acy = s[1] + (q.ay + q.ah / 2) * Zw;
+    const bl = s[0] + q.bx * Zs, bcy = s[1] + (q.by + q.bh / 2) * Zs;
+    const rl = lerp(al, bl, p), rcy = lerp(acy, bcy, p);
+    const sa = Math.pow(Zw, 1 - p) * Math.pow(Zs * q.k, p), sb = sa / q.k;
+    const a = w.el.querySelector(q.qa);
+    if (a) a.style.transform = 'translate(' + ((rl - al) / Zw).toFixed(2) + 'px,' + ((rcy - sa * q.ah / 2 - s[1]) / Zw - q.ay).toFixed(2) + 'px) scale(' + (sa / Zw).toFixed(4) + ')';
+    q.b.style.transform = 'translate(' + ((rl - bl) / Zs).toFixed(2) + 'px,' + ((rcy - sb * q.bh / 2 - s[1]) / Zs - q.by).toFixed(2) + 'px) scale(' + (sb / Zs).toFixed(4) + ')';
+  }
+}
 
 /* =============================================================================
    Expanding a widget — a zoom transition: the sheet is laid out once at full
@@ -312,6 +435,7 @@ function openDetail(w) {
   EX.w.el.style.transformOrigin = '0 0';
   syncTouchAction();
   void dp.offsetHeight;                  // lay it out now, in the tap, not in the first animated frame
+  sheetPairs(w);
   expandUpdate(0);                       // and write frame 0 now, so nothing shows a stale state
   detail.classList.add('on', 'live'); detail.setAttribute('aria-hidden', 'false');
   try { history.pushState({ ciel: 'detail' }, ''); } catch (e) { }
@@ -321,6 +445,7 @@ function closeDetail(fromPop) {
   EX.open = false; EX.drag = false;
   widgetScreenRect(EX.w, EX.src);
   EX.t.set(calm ? EX.dst : EX.src); EX.resp = SP_CLOSE[0]; EX.zeta = SP_CLOSE[1];   // reduced motion: stay put and cross-fade
+  sheetPairs(EX.w);                      // the sheet may have been scrolled: measure again
   detail.classList.remove('live'); detail.setAttribute('aria-hidden', 'true');
   if (!fromPop && history.state && history.state.ciel) { try { history.back(); } catch (e) { } }
 }
@@ -350,8 +475,12 @@ function expandUpdate(dt) {
     dp.style.transform = tf;
     dpi.style.transform = 'scale(1,' + (sx / sy).toFixed(5) + ')';
     dp.style.borderRadius = (s[4] / sx).toFixed(1) + 'px/' + (s[4] / sy).toFixed(1) + 'px';
-    const co = sstep(0.15, 0.6, p).toFixed(3);
-    dh.style.opacity = co; db.style.opacity = co;
+    // the sheet's own content fades in as it grows; what it shares with the widget (title,
+    // main value) does not fade in from nowhere: it flies from the widget (sheetPairsUpdate)
+    const co = sstep(0.15, 0.6, p).toFixed(3), bo = sstep(0, 0.25, p).toFixed(3);
+    for (const c of dh.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
+    if (activePane) for (const c of activePane.el.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
+    sheetPairsUpdate(p);
     // the widget's own content rides inside the moving glass (FLIP: a transform from its
     // layout box to the rectangle on screen), so on the way back it lands with the glass
     // instead of popping in at its final place while the glass is still flying
@@ -372,6 +501,8 @@ function expandUpdate(dt) {
       EX.active = false; EX.rest = false; detail.classList.remove('on');
       const w = EX.w;
       w.el.style.opacity = '1'; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press;
+      for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
+      SMP.length = 0;
       EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
       CS.c = null;                         // the sheet stays built (and laid out) for next time
     }
@@ -458,23 +589,19 @@ function setText(el, t) { t = String(t); if (el.textContent !== t) el.textConten
 let heroCol = 0;
 function renderHero() {
   sampleAt(colS[heroCol] || 0, H);
-  setText($('cityName'), LOC ? (LOC.name || STR.myLoc) : '…');
+  const name = LOC ? (LOC.name || STR.myLoc) : '…';
+  setText($('cityName'), name); heroText(0, name);
   $('city').classList.toggle('gps', !!(LOC && LOC.src === 'gps'));
   const when = $('when'), whenWas = when.hidden;
   when.hidden = heroCol === 0;
   if (heroCol) setText($('whenT'), dayName(H.t) + ' ' + fmt(fmtHour, H.t));
   if (!DATA) { if (when.hidden !== whenWas && WG.length) measureWidgets(); return; }
-  setText($('tempN'), fT(H.temp));
-  setText($('cond'), WMO[H.code] || '');
+  setText($('tempN'), fT(H.temp)); heroText(1, fT(H.temp) + '°', fT(H.temp) + '<i>°</i>');
+  setText($('cond'), WMO[H.code] || ''); heroText(2, WMO[H.code] || '');
+  const mk = name + '|' + fT(H.temp) + '|' + (WMO[H.code] || '');
+  if (MF.key !== mk) { MF.key = mk; if (MF.items.length) measureMorph(); }   // a new width moves the bar's targets
   const di = dayIndex(H.t), d = DATA.daily;
   setText($('hl'), di >= 0 ? fT(d.temperature_2m_max[di]) + '° / ' + fT(d.temperature_2m_min[di]) + '°' : '');
-  const mini = $('mini'), mk = (LOC ? (LOC.name || STR.myLoc) : '') + '|' + fT(H.temp) + '|' + (WMO[H.code] || '');
-  if (mini._k !== mk) {
-    mini._k = mk;
-    const ms = document.createElement('span'); ms.textContent = fT(H.temp) + '°';
-    const mc = document.createElement('span'); mc.className = 'c'; mc.textContent = WMO[H.code] || '';
-    mini.textContent = LOC ? (LOC.name || STR.myLoc) : ''; mini.append(ms, mc);
-  }
   setText($('hNote'), H.pp >= 10 ? STR.precip + ' ' + Math.round(H.pp) + ' %' : '');
   const aqi = $('aqi'), wasHidden = aqi.hidden;
   if (AQ && AQ.aqi != null) { aqi.hidden = false; setText($('aqiT'), STR.aqi + ' ' + Math.round(AQ.aqi)); } else aqi.hidden = true;
@@ -1134,6 +1261,7 @@ function boot() {
   if (!CONFIG.glassWidgets) document.body.classList.add('noglass');
   try { initGL(); } catch (e) { gl = null; document.body.classList.add('nogl'); console.error(e); }
   registerWidgets();
+  setupMorph();
   $('hTitle').textContent = STR.hours;
   syncUnits();
   makeFormatters();
