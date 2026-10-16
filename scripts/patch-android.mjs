@@ -1,7 +1,8 @@
 // Patches the freshly generated Capacitor Android project (android/ is not
 // committed — CI runs `npx cap add android` and then this script).
 //  • location + vibration permissions (geolocation fallback, haptic ticks)
-//  • MainActivity asks the display for its 120 Hz mode (WebView rAF follows it)
+//  • MainActivity asks the display for its 120 Hz mode and votes for a 120 Hz frame rate
+//    on the window + web view, so animations without a finger on the screen don't drop to 60
 //  • launcher icons rendered from assets/icon.svg, black splash (no white flash)
 //  • versionCode = CI run number, so every build installs over the last one
 import fs from 'node:fs';
@@ -28,8 +29,10 @@ const pkg = cfg.appId;
 const activity = path.join(main, 'java', ...pkg.split('.'), 'MainActivity.java');
 fs.writeFileSync(activity, `package ${pkg};
 
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Display;
+import android.webkit.WebView;
 import android.view.WindowManager;
 import com.getcapacitor.BridgeActivity;
 
@@ -38,6 +41,32 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestHighRefreshRate();
+        requestHighFrameRate();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        requestHighFrameRate();   // the web view can be recreated / re-attached: vote again
+    }
+
+    /**
+     * Android 15+ picks the refresh rate from what each view *asks for*: a finger on the
+     * screen gets the high rate, but a JavaScript animation with no touch behind it is
+     * voted "normal" and runs at 60 Hz (the hero collapse after you let go). Ask for 120
+     * explicitly on the window and on the web view so animations keep the fast rate.
+     */
+    private void requestHighFrameRate() {
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.preferredRefreshRate = 120f;
+        getWindow().setAttributes(lp);
+        if (Build.VERSION.SDK_INT >= 35) {
+            try {
+                getWindow().getDecorView().setRequestedFrameRate(120f);
+                WebView wv = getBridge() != null ? getBridge().getWebView() : null;
+                if (wv != null) wv.setRequestedFrameRate(120f);
+            } catch (Throwable ignored) { }
+        }
     }
 
     /** Pick the 120 Hz mode at the current resolution (or the fastest one available). */
