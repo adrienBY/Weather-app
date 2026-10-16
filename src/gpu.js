@@ -192,6 +192,8 @@ function gpass(enc, view, pipe, bg, clear) {
   const p = enc.beginRenderPass({ colorAttachments: [{ view, loadOp: 'clear', clearValue: clear || [0, 0, 0, 0], storeOp: 'store' }] });
   p.setPipeline(pipe); p.setBindGroup(0, bg); p.draw(3); p.end();
 }
+// how far the page has scrolled over the sky: the sky softens into its blurred colour (shared by both renderers)
+function bgBlur() { return sstep(0.08, 0.95, clamp(SC.y / (heroH * 0.85), 0, 1)); }
 function v4(f, o, a, b, c, d) { f[o] = a; f[o + 1] = b; f[o + 2] = c; f[o + 3] = d || 0; }
 function v3(f, o, s) { f[o] = s[0]; f[o + 1] = s[1]; f[o + 2] = s[2]; f[o + 3] = 0; }
 
@@ -296,7 +298,7 @@ function gpuRender(dt) {
   }
   // 7. widget material → screen
   const f = g.u.final.f;
-  v4(f, 0, cw, ch, skyClock, UI_DIM); f.set(PRESS, 4); v4(f, 8, LIGHT_X, LIGHT_Y); f.set(RECT, 12); f.set(RECTP, 52);
+  v4(f, 0, cw, ch, skyClock, UI_DIM); f.set(PRESS, 4); v4(f, 8, LIGHT_X, LIGHT_Y, bgBlur()); f.set(RECT, 12); f.set(RECTP, 52);
   gpass(enc, g.ctx.getCurrentTexture().createView(), P_.final, gbg('final', P_.final, [gub(g.u.final), R.sky.v, R.bup[2].v, g.sClamp]), [0, 0, 0, 1]);
   g.dev.queue.submit([enc.finish()]);
 }
