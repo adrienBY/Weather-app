@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="A weather app whose sky is a live, ray-marched WebGL2 scene driven by real forecast data.">
+<title>Ciel</title>
+<!-- Manifest + icons are generated at runtime as data: URIs (installManifest). -->
+<style>
+@@STYLES@@
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+<div id="scrim"></div>
+<div id="safe" aria-hidden="true"></div>
+
+<div id="viewport">
+  <main id="content">
+    <section id="hero" aria-live="polite">
+      <button id="city" class="press"><svg class="pin" viewBox="0 0 24 24"><use href="#i-loc"/></svg><span id="cityName">…</span></button>
+      <button id="temp" class="press" aria-label="Toggle °C / °F"><span id="tempN">--</span><span id="deg">°</span></button>
+      <div id="line"><span id="cond"></span><span id="hl"></span></div>
+      <div class="pills">
+        <button id="when" class="pill solid press" hidden><svg viewBox="0 0 24 24"><use href="#i-back"/></svg><span id="whenT"></span></button>
+        <button id="aqi" class="w pill press" data-w="aqi" hidden><svg viewBox="0 0 24 24"><use href="#i-leaf"/></svg><span id="aqiT"></span></button>
+        <div id="net" class="pill" hidden><span class="dot"></span><span id="netT"></span></div>
+      </div>
+    </section>
+
+    <section class="w card" data-w="hours" id="wHours">
+      <h2 class="wh"><svg viewBox="0 0 24 24"><use href="#i-clock"/></svg><span id="hTitle"></span><small id="hNote"></small></h2>
+      <div id="hwrap">
+        <div id="hscroll"><div id="htrack"></div></div>
+        <div id="phead"><div id="pdot"></div></div>
+      </div>
+    </section>
+
+    <section class="w card" data-w="days" id="wDays"></section>
+
+    <div id="tiles">
+      <section class="w tile" data-w="uv" id="tUV"></section>
+      <section class="w tile" data-w="wind" id="tWind"></section>
+      <section class="w tile" data-w="sun" id="tSun"></section>
+      <section class="w tile" data-w="feels" id="tFeels"></section>
+      <section class="w tile" data-w="hum" id="tHum"></section>
+      <section class="w tile" data-w="pres" id="tPres"></section>
+    </div>
+    <footer id="foot"></footer>
+  </main>
+</div>
+
+<div id="bar">
+  <div id="mini"></div>
+  <button id="addBtn" class="ib press" aria-label="Search a city"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg></button>
+  <button id="menuBtn" class="ib press" aria-label="Menu"><svg viewBox="0 0 24 24"><use href="#i-more"/></svg></button>
+</div>
+
+<!-- expanded widget: laid out once at full size, zoomed from the tapped widget -->
+<div id="detail" aria-hidden="true">
+  <div id="dp" role="dialog" aria-modal="true">
+    <div id="dh">
+      <div class="grab"></div>
+      <div class="dtitle"><svg id="dIcon" viewBox="0 0 24 24"></svg><h1 id="dTitle"></h1></div>
+      <button id="dClose" class="press" aria-label="Close"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+    </div>
+    <div id="db"></div>
+  </div>
+</div>
+
+<div id="menu" role="menu">
+  <div class="seg"><span id="uLbl"></span><span><i data-u="C">°C</i><i data-u="F">°F</i></span></div>
+  <button id="mRefresh"><span id="mRefreshL"></span><svg viewBox="0 0 24 24"><use href="#i-refresh"/></svg></button>
+  <button id="mDebug"><span id="mDebugL"></span><svg viewBox="0 0 24 24"><use href="#i-stats"/></svg></button>
+  <hr><small id="mStatus"></small>
+</div>
+
+<div id="sheet" hidden>
+  <div class="sc" role="dialog" aria-modal="true">
+    <div class="srow"><input id="q" type="search" autocomplete="off" enterkeyhint="search">
+      <button id="close" class="press" aria-label="Close"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button></div>
+    <button id="gps" class="press"><svg viewBox="0 0 24 24"><use href="#i-target"/></svg><span id="gpsLbl"></span></button>
+    <div id="results"></div>
+  </div>
+</div>
+<div id="dbg" hidden></div>
+
+<!-- glyphs: colour weather icons + monochrome UI symbols -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gC" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#cfd8e6"/></linearGradient>
+    <linearGradient id="gD" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#aab4c6"/><stop offset="1" stop-color="#7c879c"/></linearGradient>
+    <radialGradient id="gS" cx=".4" cy=".35" r=".7"><stop offset="0" stop-color="#ffe08a"/><stop offset="1" stop-color="#ffb338"/></radialGradient>
+  </defs>
+  <symbol id="i-sun" viewBox="0 0 32 32"><circle cx="16" cy="16" r="8" fill="url(#gS)"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 32 32"><path d="M21.5 20.6A9 9 0 0 1 13 7.2a9.5 9.5 0 1 0 12.2 12.1 9 9 0 0 1-3.7 1.3z" fill="url(#gS)"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 32 32"><path d="M9.5 25h13.6a5.4 5.4 0 0 0 .6-10.8 7.6 7.6 0 0 0-14.6 1.6A4.7 4.7 0 0 0 9.5 25z" fill="url(#gC)"/></symbol>
+  <symbol id="i-psun" viewBox="0 0 32 32"><circle cx="12" cy="11.5" r="6.2" fill="url(#gS)"/><path d="M11.5 26h12a4.9 4.9 0 0 0 .5-9.8 6.9 6.9 0 0 0-13.2 1.5 4.2 4.2 0 0 0 .7 8.3z" fill="url(#gC)"/></symbol>
+  <symbol id="i-pmoon" viewBox="0 0 32 32"><path d="M15.2 14.6A6.5 6.5 0 0 1 9 5.4a7 7 0 1 0 8.8 8.7 6.5 6.5 0 0 1-2.6.5z" fill="url(#gS)"/><path d="M11.5 26h12a4.9 4.9 0 0 0 .5-9.8 6.9 6.9 0 0 0-13.2 1.5 4.2 4.2 0 0 0 .7 8.3z" fill="url(#gC)"/></symbol>
+  <symbol id="i-rain" viewBox="0 0 32 32"><path d="M9.5 20h13.6a5.4 5.4 0 0 0 .6-10.8A7.6 7.6 0 0 0 9.1 10.8 4.7 4.7 0 0 0 9.5 20z" fill="url(#gC)"/><path d="M11 23l-1.2 3.4M16 23l-1.2 3.4M21 23l-1.2 3.4" stroke="#7cc4ff" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-snow" viewBox="0 0 32 32"><path d="M9.5 20h13.6a5.4 5.4 0 0 0 .6-10.8A7.6 7.6 0 0 0 9.1 10.8 4.7 4.7 0 0 0 9.5 20z" fill="url(#gC)"/><g fill="#e6f2ff"><circle cx="11" cy="24.5" r="1.4"/><circle cx="16" cy="27" r="1.4"/><circle cx="21" cy="24.5" r="1.4"/></g></symbol>
+  <symbol id="i-storm" viewBox="0 0 32 32"><path d="M9.5 20h13.6a5.4 5.4 0 0 0 .6-10.8A7.6 7.6 0 0 0 9.1 10.8 4.7 4.7 0 0 0 9.5 20z" fill="url(#gD)"/><path d="M16.8 18.5l-3.6 5.6h3l-1.6 5 4.6-6.6h-3.1l1.5-4z" fill="#ffd04a"/></symbol>
+  <symbol id="i-fog" viewBox="0 0 32 32"><path d="M6 12h20M8 17h16M6 22h20" stroke="#dfe6f0" stroke-width="2.2" stroke-linecap="round"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 3l6 15-6-3.5L6 18z" fill="currentColor"/></symbol>
+  <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <symbol id="i-loc" viewBox="0 0 24 24"><path d="M12 3l7 18-7-4-7 4z" fill="currentColor" stroke="none" transform="rotate(40 12 12)"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M4 4v4.5h4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-leaf" viewBox="0 0 24 24"><path d="M5 19c0-8 5-13 14-14 0 9-5 14-13 14z M5 19l7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 10h16M8.5 3.5v3M15.5 3.5v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-uv" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-wind" viewBox="0 0 24 24"><path d="M3 9h11a3 3 0 1 0-3-3M3 15h15a3 3 0 1 1-3 3M3 12h7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-sunrise" viewBox="0 0 24 24"><path d="M5 17a7 7 0 0 1 14 0M3 20h18M12 3v4M8.5 5.5L12 3l3.5 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-therm" viewBox="0 0 24 24"><path d="M10 14.5V5a2 2 0 1 1 4 0v9.5a4 4 0 1 1-4 0z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 3.5s6 6.6 6 11a6 6 0 0 1-12 0c0-4.4 6-11 6-11z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4.5 17a8.5 8.5 0 1 1 15 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 13l4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="5.5" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="18.5" r="1.7" fill="currentColor"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-stats" viewBox="0 0 24 24"><path d="M5 19V10M11 19V5M17 19v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><path d="M12 2v3M12 19v3M2 12h3M19 12h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  </g>
+</svg>
+
+@@SHADERS@@
+
+<script>
+@@APP@@
+</script>
+</body>
+</html>
