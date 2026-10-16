@@ -166,7 +166,7 @@ function scrollUpdate(dt) {
 }
 
 /* =============================================================================
-   Glass widgets — each .w element is a slot in final.frag. Layout is measured
+   Widgets — each .w element is a material slot in final.frag. Layout is measured
    when it changes (never per frame); per frame we only offset by the scroll.
    ============================================================================= */
 const WG = [];
@@ -199,6 +199,7 @@ let lastCT = '', lastHT = '', lastHO = '', lastBar = '';
 function uiUpdate(dt) {
   scrollUpdate(dt);
   expandUpdate(dt);
+  chartUpdate(dt);
   // press: the material flexes and glows under the finger
   let pressAmt = 0, pressSlot = -1;
   for (const w of WG) {
@@ -206,10 +207,10 @@ function uiUpdate(dt) {
       // asymmetric: the press lands instantly and without overshoot (feedback on
       // touch-down); the release is the material springing back, a touch of bounce
       const down = w.pressT > w.press;
-      w.pressV = springTo(w.press, w.pressV, w.pressT, down ? 0.12 : 0.3, down ? 1 : 0.8, dt, SCR, 0); w.press = SCR[0];
+      w.pressV = springTo(w.press, w.pressV, w.pressT, down ? 0.09 : 0.26, down ? 1 : 0.72, dt, SCR, 0); w.press = SCR[0];
       if (Math.abs(w.press - w.pressT) < 1e-3 && Math.abs(w.pressV) < 1e-3) { w.press = w.pressT; w.pressV = 0; }
     }
-    const s = 1 - 0.025 * w.press;
+    const s = 1 - 0.03 * w.press;
     if (Math.abs(s - w.lastS) > 1e-4) { w.el.style.transform = s === 1 ? '' : 'scale(' + s.toFixed(4) + ')'; w.lastS = s; }
     if (w.press > pressAmt) { pressAmt = w.press; pressSlot = w.slot; }
   }
@@ -237,7 +238,7 @@ function uiUpdate(dt) {
   for (let i = 0; i < SHEET_SLOT; i++) {
     const o = i * 4, w = WG[i];
     if (!w || !w.vis || !CONFIG.glassWidgets) { RECTP[o + 1] = 0; continue; }
-    const ps = 1 - 0.025 * w.press;
+    const ps = 1 - 0.03 * w.press;
     let ww = w.w * ps, hh = w.h * ps;
     let x = w.x + (w.w - ww) / 2, yy = w.y - y + (w.inHero ? heroShift : 0) + (w.h - hh) / 2;
     x = (1 - s) * cx + s * x; yy = (1 - s) * cy + s * yy; ww *= s; hh *= s;
@@ -258,19 +259,22 @@ function uiUpdate(dt) {
   const lx = -0.45 + tiltX * 0.55, ly = 0.89 - tiltY * 0.35, ll = Math.hypot(lx, ly) || 1;
   LIGHT_X = lx / ll; LIGHT_Y = ly / ll;
 }
-function uiBusy() { return SC.mode !== 0 || EX.active || (pressW && pressW.press > 0.001); }
+function uiBusy() { return SC.mode !== 0 || EX.active || CS.on || (pressW && pressW.press > 0.001); }
 
 /* =============================================================================
    Expanding a widget — a zoom transition: the sheet is laid out once at full
-   size, then scaled + clipped so it grows out of the tapped widget, while its
-   glass rectangle (slot 9) follows the same springs in the same frame. The
-   page pushes back and dims. Interruptible, and the header can be dragged
-   down to dismiss with velocity hand-off (Apple's projection decides).
+   size, then scaled + clipped (transforms only) so it grows out of the tapped
+   widget, while its material rectangle (slot 9) follows the same springs in
+   the same frame. The page pushes back and dims. Interruptible; dragged down
+   it dismisses with velocity hand-off (Apple's projection decides).
    ============================================================================= */
 const EX = { active: false, open: false, w: null, s: new Float32Array(5), v: new Float32Array(5), t: new Float32Array(5),
   src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '',
-  ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '' };
-const detail = $('detail'), dp = $('dp'), dh = $('dh'), db = $('db');
+  ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0 };
+// sheet springs (response s, damping ratio): open and close are critically damped
+// or nearly so — the zoom lands without wobble; a throw back up keeps a little life
+const SP_OPEN = [0.40, 0.9], SP_CLOSE = [0.36, 0.96], SP_BACK = [0.32, 0.82];
+const detail = $('detail'), dp = $('dp'), dpi = $('dpi'), dh = $('dh'), db = $('db');
 let safeT = 0, safeB = 0, safeL = 0, safeR = 0;
 function measureSafe() {
   const cs = getComputedStyle(document.documentElement);
@@ -283,28 +287,32 @@ function widgetScreenRect(w, out) {
 }
 function openDetail(w) {
   if (EX.open || !DATA) return;
+  for (const k in CH) delete CH[k];
   const d = renderDetail(w.key);
   if (!d) return;
   markInteraction();
   $('dTitle').textContent = d.title;
   $('dIcon').innerHTML = '<use href="#i-' + d.icon + '"/>';
   db.innerHTML = d.html; db.scrollTop = 0;
+  CS.c = null;
+  if (pendingMark && CH[pendingMark[0]]) { chartBind(pendingMark[0], pendingMark[1]); pendingMark = null; }
   const dst = EX.dst;
   dst[0] = 8 + safeL; dst[1] = safeT + 8; dst[2] = cssW - 16 - safeL - safeR; dst[3] = cssH - dst[1] - 8; dst[4] = 34;
   dp.style.left = dst[0] + 'px'; dp.style.top = dst[1] + 'px'; dp.style.width = dst[2] + 'px'; dp.style.height = dst[3] + 'px';
   widgetScreenRect(w, EX.src);
   if (!EX.active) { EX.s.set(calm ? dst : EX.src); EX.v.fill(0); EX.fade = calm ? 0 : 1; }
-  EX.t.set(dst); EX.w = w; EX.open = true; EX.active = true; EX.resp = 0.5; EX.zeta = 0.86;
+  EX.t.set(dst); EX.w = w; EX.open = true; EX.active = true; EX.resp = SP_OPEN[0]; EX.zeta = SP_OPEN[1];
+  EX.lastT = ''; EX.fresh = 2;           // building the sheet is one long frame: don't let the springs jump over it
+  void dp.offsetHeight;                  // lay it out now, in the tap, not in the first animated frame
   detail.classList.add('on', 'live'); detail.setAttribute('aria-hidden', 'false');
   try { history.pushState({ ciel: 'detail' }, ''); } catch (e) { }
   if (d.after) requestAnimationFrame(d.after);
 }
-function closeDetail(fromPop, vy) {
+function closeDetail(fromPop) {
   if (!EX.open) return;
   EX.open = false; EX.drag = false;
   widgetScreenRect(EX.w, EX.src);
-  EX.t.set(calm ? EX.dst : EX.src); EX.resp = 0.46; EX.zeta = 0.9;   // reduced motion: stay put and cross-fade
-  if (vy) EX.v[1] = vy;
+  EX.t.set(calm ? EX.dst : EX.src); EX.resp = SP_CLOSE[0]; EX.zeta = SP_CLOSE[1];   // reduced motion: stay put and cross-fade
   detail.classList.remove('live'); detail.setAttribute('aria-hidden', 'true');
   if (!fromPop && history.state && history.state.ciel) { try { history.back(); } catch (e) { } }
 }
@@ -313,9 +321,11 @@ $('dClose').addEventListener('click', () => closeDetail(false));
 function expandUpdate(dt) {
   if (!EX.active) return;
   const s = EX.s, v = EX.v, t = EX.t, src = EX.src, dst = EX.dst;
+  if (EX.fresh) { dt = Math.min(dt, 1 / 120); EX.fresh--; }
   if (!EX.drag) for (let i = 0; i < 5; i++) v[i] = springTo(s[i], v[i], t[i], EX.resp, EX.zeta, dt, s, i);
-  const pw = (s[2] - src[2]) / Math.max(1, dst[2] - src[2]), ph = (s[3] - src[3]) / Math.max(1, dst[3] - src[3]);
-  EX.prog = clamp((pw + ph) / 2, 0, 1.05);
+  // progress from the summed growth of both sides: a full-width card barely grows
+  // in width, so a per-axis average would read a small pull-down as "closed"
+  EX.prog = clamp((s[2] - src[2] + s[3] - src[3]) / Math.max(1, dst[2] - src[2] + dst[3] - src[3]), 0, 1.05);
   // reduced motion: no zoom, no push-back — a 200 ms cross-fade carries the change
   EX.fade = calm ? clamp(EX.fade + (EX.open ? dt : -dt) / 0.2, 0, 1) : 1;
   const p = clamp(EX.prog, 0, 1) * EX.fade;
@@ -323,13 +333,15 @@ function expandUpdate(dt) {
   PUSH = 1 - (calm ? 0 : 0.06 * p); UI_DIM = p;
   const fo = EX.fade.toFixed(3);
   if (fo !== EX.lastF) { dp.style.opacity = fo === '1.000' ? '' : fo; EX.lastF = fo; }
-  const sc = Math.max(0.05, s[2] / dst[2]);
-  const clipB = Math.max(0, dst[3] - s[3] / sc);
-  const tf = 'translate3d(' + (s[0] - dst[0]).toFixed(2) + 'px,' + (s[1] - dst[1]).toFixed(2) + 'px,0) scale(' + sc.toFixed(4) + ')';
+  // transform-only zoom (compositor, no repaint): the clip box scales non-uniformly
+  // to the moving rectangle, the content inside counter-scales to a uniform zoom
+  const sx = Math.max(0.02, s[2] / dst[2]), sy = Math.max(0.02, s[3] / dst[3]);
+  const tf = 'translate3d(' + (s[0] - dst[0]).toFixed(2) + 'px,' + (s[1] - dst[1]).toFixed(2) + 'px,0) scale(' + sx.toFixed(5) + ',' + sy.toFixed(5) + ')';
   const key = tf + p.toFixed(3);                       // p carries the reduced-motion fade too
   if (key !== EX.lastT) {
     dp.style.transform = tf;
-    dp.style.clipPath = 'inset(0 0 ' + clipB.toFixed(1) + 'px 0 round ' + (s[4] / sc).toFixed(1) + 'px)';
+    dpi.style.transform = 'scale(1,' + (sx / sy).toFixed(5) + ')';
+    dp.style.borderRadius = (s[4] / sx).toFixed(1) + 'px/' + (s[4] / sy).toFixed(1) + 'px';
     const co = sstep(0.32, 0.85, p).toFixed(3);
     dh.style.opacity = co; db.style.opacity = co;
     EX.w.el.style.opacity = (1 - sstep(0, 0.3, p)).toFixed(3);
@@ -342,42 +354,74 @@ function expandUpdate(dt) {
     if (done) {
       EX.active = false; detail.classList.remove('on');
       EX.w.el.style.opacity = ''; EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
-      db.innerHTML = '';
+      db.innerHTML = ''; CS.c = null;
     }
   }
 }
-// drag the header down to dismiss
-dh.addEventListener('pointerdown', e => {
-  if (!EX.open || e.target.closest('#dClose')) return;
-  EX.drag = true; EX.dy0 = e.clientY; EX.hn = 0; EX.v.fill(0);
-  try { dh.setPointerCapture(e.pointerId); } catch (err) { }
-  markInteraction();
-});
-dh.addEventListener('pointermove', e => {
-  if (!EX.drag) return;
-  markInteraction();
-  let dy = e.clientY - EX.dy0;
-  dy = dy < 0 ? -rubber(-dy, cssH) * 0.4 : dy;
-  EX.dyl = dy;
+// Drag down to dismiss — from the header, or anywhere on the body once it is
+// scrolled to the top (like an iOS sheet). The sheet tracks the finger 1:1;
+// on release every edge of the rectangle inherits the finger's velocity, so
+// the zoom back into the widget continues the throw without a seam.
+const DRAG_K = 0.38;                                   // the sheet shrinks by 38 % over a full-screen pull
+function dragStart(y, ts) {
+  EX.drag = true; EX.dy0 = y; EX.dyl = 0; EX.hn = 0; EX.v.fill(0);
+  dragHist(ts, y); markInteraction();
+}
+function dragHist(ts, y) {
   if (EX.hn === 8) { EX.ht.copyWithin(0, 1); EX.hy.copyWithin(0, 1); EX.hn = 7; }
-  EX.ht[EX.hn] = e.timeStamp; EX.hy[EX.hn] = e.clientY; EX.hn++;
-  const dst = EX.dst, s = EX.s, f = 1 - clamp(dy / cssH, 0, 1) * 0.38;
-  s[2] = dst[2] * f; s[3] = dst[3] * f; s[0] = dst[0] + (dst[2] - s[2]) / 2; s[1] = dst[1] + Math.max(dy, -30) * 0.92; s[4] = dst[4];
-});
-function endSheetDrag(e) {
+  EX.ht[EX.hn] = ts; EX.hy[EX.hn] = y; EX.hn++;
+}
+function dragMove(y, ts) {
+  markInteraction();
+  let dy = y - EX.dy0;
+  dy = dy < 0 ? -rubber(-dy, cssH) * 0.4 : dy;
+  EX.dyl = dy; dragHist(ts, y);
+  const dst = EX.dst, s = EX.s, f = 1 - clamp(dy / cssH, 0, 1) * DRAG_K;
+  s[2] = dst[2] * f; s[3] = dst[3] * f; s[0] = dst[0] + (dst[2] - s[2]) / 2; s[1] = dst[1] + dy * 0.92; s[4] = dst[4];
+}
+function dragEnd(ts) {
   if (!EX.drag) return;
   EX.drag = false;
   let vy = 0;
-  if (EX.hn > 1 && e.timeStamp - EX.ht[EX.hn - 1] < 90) {
+  if (EX.hn > 1 && ts - EX.ht[EX.hn - 1] < 90) {
     let i = EX.hn - 1; while (i > 0 && EX.ht[EX.hn - 1] - EX.ht[i - 1] < 90) i--;
     const dtv = (EX.ht[EX.hn - 1] - EX.ht[i]) / 1000; if (dtv > 0.004) vy = (EX.hy[EX.hn - 1] - EX.hy[i]) / dtv;
   }
-  const projected = EX.dyl + (vy / 1000) * 0.998 / (1 - 0.998);   // where the flick is heading
-  if (projected > cssH * 0.25) closeDetail(false, vy);
-  else { EX.t.set(EX.dst); EX.v[1] = vy; EX.resp = 0.38; EX.zeta = 0.8; }   // thrown back up: sheet spring, slight settle
+  // velocity of every component of the rectangle, from the finger's (chain rule through dragMove)
+  const dst = EX.dst, k = EX.dyl >= 0 ? 1 : 0, ds2 = -dst[2] * DRAG_K / cssH * k;
+  const projected = EX.dyl + (vy / 1000) * 0.998 / (1 - 0.998);   // where the flick is heading (Apple's projection)
+  const close = projected > cssH * 0.22;
+  if (close) closeDetail(false);
+  else { EX.t.set(dst); EX.resp = SP_BACK[0]; EX.zeta = SP_BACK[1]; }
+  EX.v[0] = -ds2 / 2 * vy; EX.v[1] = vy * (k ? 0.92 : 0.4); EX.v[2] = ds2 * vy; EX.v[3] = -dst[3] * DRAG_K / cssH * k * vy; EX.v[4] = 0;
 }
-dh.addEventListener('pointerup', endSheetDrag);
-dh.addEventListener('pointercancel', endSheetDrag);
+dh.addEventListener('pointerdown', e => {
+  if (!EX.open || e.target.closest('#dClose')) return;
+  dragStart(e.clientY, e.timeStamp);
+  try { dh.setPointerCapture(e.pointerId); } catch (err) { }
+});
+dh.addEventListener('pointermove', e => { if (EX.drag) dragMove(e.clientY, e.timeStamp); });
+dh.addEventListener('pointerup', e => dragEnd(e.timeStamp));
+dh.addEventListener('pointercancel', e => dragEnd(e.timeStamp));
+// body: decide on the very first move (while it can still be cancelled): pulling
+// down from the top of the scroll takes the sheet, anything else scrolls natively
+let bt = null;
+db.addEventListener('touchstart', e => {
+  bt = (!EX.open || e.touches.length > 1) ? null : { x: e.touches[0].clientX, y: e.touches[0].clientY, top: db.scrollTop <= 0, mode: 0 };
+}, { passive: true });
+db.addEventListener('touchmove', e => {
+  if (!bt) return;
+  const p = e.touches[0], dx = p.clientX - bt.x, dy = p.clientY - bt.y;
+  if (bt.mode === 0) {
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+    if (bt.top && dy > 0 && dy >= Math.abs(dx) && !CS.on) { bt.mode = 1; dragStart(bt.y, e.timeStamp); }
+    else bt.mode = 2;
+  }
+  if (bt.mode === 1) { if (e.cancelable) e.preventDefault(); dragMove(p.clientY, e.timeStamp); }
+}, { passive: false });
+const bodyEnd = e => { if (bt && bt.mode === 1) dragEnd(e.timeStamp); bt = null; };
+db.addEventListener('touchend', bodyEnd);
+db.addEventListener('touchcancel', bodyEnd);
 
 /* =============================================================================
    Hero, 48 h card, 7 days, tiles
@@ -583,13 +627,88 @@ function renderTiles() {
 /* =============================================================================
    Detail sheets
    ============================================================================= */
-let chartId = 0;
+let chartId = 0, pendingMark = null;
+const CH = {};                                          // scrubbable charts of the open sheet
+/* Chart scrubbing — drag along the chart: the lollipop rides the exact curve
+   (the path's Bézier segments are linear in x, so t = the fraction between two
+   hours), the readout follows, and the whole sky morphs to that hour live.
+   On release it settles on the nearest hour with a soft spring, and the 48 h
+   card underneath is moved there too. */
+const CS = { c: null, id: '', g: null, line: null, dot: null, txt: null, f: 0, ft: 0, v: 0, on: false, pid: -1, x0: 0, y0: 0, last: -1, el: null };
+function chartBind(id, f) {
+  const g = document.getElementById(id + 'm');
+  if (!g) return;
+  CS.c = CH[id]; CS.id = id; CS.g = g; CS.line = g.querySelector('line'); CS.dot = g.querySelector('circle'); CS.txt = g.querySelector('text');
+  CS.el = g.ownerSVGElement; CS.f = CS.ft = f; CS.v = 0; CS.last = Math.round(f);
+  chartDraw();
+}
+function chartDraw() {
+  const c = CS.c; if (!c) return;
+  const f = clamp(CS.f, 0, c.n - 1), k = Math.min(c.n - 2, Math.floor(f)), t = k < 0 ? 0 : f - k, ys = c.ys;
+  const x = c.pl + f * c.iw / Math.max(1, c.n - 1);
+  let y = ys[0];
+  if (k >= 0) {   // the same cubic as smoothPath()
+    const y0 = ys[Math.max(0, k - 1)], y1 = ys[k], y2 = ys[k + 1], y3 = ys[Math.min(c.n - 1, k + 2)];
+    const p1 = y1 + (y2 - y0) / 6, p2 = y2 - (y3 - y1) / 6, u = 1 - t;
+    y = u * u * u * y1 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * y2;
+  }
+  CS.line.setAttribute('x1', x.toFixed(1)); CS.line.setAttribute('x2', x.toFixed(1));
+  CS.dot.setAttribute('cx', x.toFixed(1)); CS.dot.setAttribute('cy', y.toFixed(1));
+  const i = Math.round(f), h = HOURS[i];
+  const val = k >= 0 ? lerp(c.v[k], c.v[k + 1], t) : c.v[0];
+  CS.txt.textContent = (h ? (i === 0 ? STR.nowS : fmt(fmtHour, h.t)) : '') + '  ' + c.yl(val);
+  CS.txt.setAttribute('x', clamp(x, 36, c.W - 84).toFixed(1));
+}
+function chartScrubTo(clientX) {
+  const c = CS.c, r = CS.el.getBoundingClientRect();
+  const vx = (clientX - r.left) / Math.max(1, r.width) * c.W;
+  CS.ft = CS.f = clamp((vx - c.pl) / c.iw * (c.n - 1), 0, c.n - 1); CS.v = 0;
+  chartDraw();
+  // the sky follows the finger, continuously between hours
+  const k = Math.min(nCols - 1, Math.floor(CS.f)), k1 = Math.min(nCols - 1, k + 1), fr = CS.f - k;
+  scrubTarget = lerp(colS[k] || 0, colS[k1] || 0, fr); scrubbing = true; updateTargets();
+  clearTimeout(scrubIdle); scrubIdle = setTimeout(() => { scrubbing = false; }, 160);
+  const i = Math.round(CS.f);
+  if (i !== CS.last) { CS.last = i; if (navigator.vibrate) navigator.vibrate(5); }   // a tick per hour
+}
+function chartRelease() {
+  CS.on = false; CS.pid = -1;
+  CS.ft = Math.round(CS.f);
+  hscroll.scrollLeft = CS.ft * colW;          // the 48 h card (and the hero) settle on that hour too
+}
+db.addEventListener('pointerdown', e => {
+  const el = e.target.closest('.chart[data-ch]');
+  if (!el || !CS.c || el.dataset.ch !== CS.id || !EX.open) return;
+  CS.pid = e.pointerId; CS.x0 = e.clientX; CS.y0 = e.clientY; CS.on = false; markInteraction();
+});
+db.addEventListener('pointermove', e => {
+  if (e.pointerId !== CS.pid) return;
+  if (!CS.on) {
+    const dx = Math.abs(e.clientX - CS.x0), dy = Math.abs(e.clientY - CS.y0);
+    if (dx > 4 && dx > dy) { CS.on = true; try { CS.el.setPointerCapture(e.pointerId); } catch (err) { } }
+    else return;
+  }
+  markInteraction(); chartScrubTo(e.clientX);
+});
+db.addEventListener('pointerup', e => {
+  if (e.pointerId !== CS.pid) return;
+  if (!CS.on && Math.hypot(e.clientX - CS.x0, e.clientY - CS.y0) < 8) chartScrubTo(e.clientX);   // a tap jumps there
+  chartRelease();
+});
+db.addEventListener('pointercancel', e => { if (e.pointerId === CS.pid) { CS.pid = -1; if (CS.on) chartRelease(); } });
+function chartUpdate(dt) {
+  if (!CS.c || CS.on || CS.f === CS.ft) return;
+  CS.v = springTo(CS.f, CS.v, CS.ft, 0.24, 1, dt, SCR, 0); CS.f = SCR[0];
+  if (Math.abs(CS.f - CS.ft) < 0.002 && Math.abs(CS.v) < 0.01) { CS.f = CS.ft; CS.v = 0; }
+  chartDraw();
+}
 function chart(o) {
-  const W = o.w, Hh = o.h, pl = 2, pr = 40, pt = 14, pb = 24, iw = W - pl - pr, ih = Hh - pt - pb, n = o.n;
+  const W = o.w, Hh = o.h, pl = 2, pr = 40, pt = o.mark != null ? 26 : 14, pb = 24, iw = W - pl - pr, ih = Hh - pt - pb, n = o.n;
   let mn = o.min, mx = o.max; if (mx - mn < 1e-6) mx = mn + 1;
   const X = i => pl + i * iw / Math.max(1, n - 1), Y = v => pt + (1 - (v - mn) / (mx - mn)) * ih;
   const id = 'ch' + (chartId++);
-  let s = '<svg class="chart" viewBox="0 0 ' + W + ' ' + Hh + '" height="' + Hh + '"><defs>';
+  const scrub = o.mark != null;
+  let s = '<svg class="chart"' + (scrub ? ' data-ch="' + id + '"' : '') + ' viewBox="0 0 ' + W + ' ' + Hh + '" height="' + Hh + '"><defs>';
   o.series.forEach((sr, si) => {
     if (sr.temp) { let st = ''; for (let i = 0; i < n; i += 3) st += '<stop offset="' + (X(i) / W).toFixed(3) + '" stop-color="' + tColor(sr.v[i]) + '"/>'; s += '<linearGradient id="' + id + 's' + si + '" gradientUnits="userSpaceOnUse" x1="0" x2="' + W + '" y1="0" y2="0">' + st + '</linearGradient>'; }
     if (sr.area) s += '<linearGradient id="' + id + 'a' + si + '" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="' + sr.area + '" stop-opacity=".38"/><stop offset="1" stop-color="' + sr.area + '" stop-opacity="0"/></linearGradient>';
@@ -622,9 +741,16 @@ function chart(o) {
     s += '<path d="' + d + '" fill="none" stroke="' + (sr.temp ? 'url(#' + id + 's' + si + ')' : sr.color) + '" stroke-width="' + (sr.width || 2.25) + '"' + (sr.dash ? ' stroke-dasharray="' + sr.dash + '"' : '') + ' stroke-linecap="round" stroke-linejoin="round"/>';
   });
   for (let i = 0; i < n; i++) { const lab = o.xl(i); if (lab) s += '<text x="' + X(i).toFixed(1) + '" y="' + (Hh - 6) + '" text-anchor="middle">' + lab + '</text>'; }
-  if (o.mark != null && o.mark < n) {
-    const xm = X(o.mark).toFixed(1), ym = Y(o.series[0].v[o.mark]).toFixed(1);
-    s += '<line x1="' + xm + '" x2="' + xm + '" y1="' + pt + '" y2="' + (pt + ih) + '" stroke="rgba(255,255,255,.4)" stroke-dasharray="2 3"/><circle cx="' + xm + '" cy="' + ym + '" r="4.5" fill="#fff"/>';
+  if (scrub && o.mark < n) {
+    // the selection: a lollipop you can drag along the curve (see chartDraw)
+    const ys0 = [], sv = o.series[0].v;
+    for (let i = 0; i < n; i++) ys0.push(Y(sv[i]));
+    CH[id] = { n, pl, iw, W, pt, ih, ys: ys0, v: sv, yl: o.rl || o.yl };
+    s += '<g id="' + id + 'm"><line x1="0" x2="0" y1="' + pt + '" y2="' + (pt + ih) + '" stroke="rgba(255,255,255,.45)" stroke-dasharray="2 3"/>' +
+      '<circle r="4.5" fill="#fff" stroke="rgba(0,0,0,.25)" stroke-width="1"/><text class="rd" y="' + (pt - 3) + '" text-anchor="middle"></text></g>';
+    s += '</svg>';
+    pendingMark = [id, o.mark];
+    return s;
   }
   return s + '</svg>';
 }
@@ -682,7 +808,7 @@ function renderDetail(key) {
     let pk = HOURS[0]; HOURS.slice(0, 24).forEach(h => { if (h.uv > pk.uv) pk = h; });
     const tm = DATA.daily.uv_index_max && DATA.daily.uv_index_max[1];
     return { title: STR.uvT, icon: 'uv', html: '<div class="big"><b>' + Math.round(H.uv) + '</b><span>' + STR.uv[lv] + '</span></div><p class="lede">' + STR.uvAdv[lv] + '</p>' +
-      chart({ w: W, h: 190, n, min: 0, max: Math.max(6, Math.max(...uvs) + 1), series: [{ v: uvs, color: 'rgba(255,255,255,.0)', width: 0.01 }], bars: { v: uvs, max: Math.max(6, Math.max(...uvs) + 1), full: true, color: i => UV_COL[uvLevel(uvs[i])] }, night, xl, yl: v => Math.round(v), mark }) +
+      chart({ w: W, h: 190, n, min: 0, max: Math.max(6, Math.max(...uvs) + 1), series: [{ v: uvs, color: 'rgba(255,255,255,.0)', width: 0.01 }], bars: { v: uvs, max: Math.max(6, Math.max(...uvs) + 1), full: true, color: i => UV_COL[uvLevel(uvs[i])] }, night, xl, yl: v => Math.round(v), rl: v => 'UV ' + Math.round(v), mark }) +
       '<div class="stats">' + stat(STR.peak, Math.round(pk.uv) + ' ' + STR.at + ' ' + fmt(fmtHour, pk.t)) + stat(STR.tomorrow, tm != null ? Math.round(tm) : '–') + '</div>' };
   }
   if (key === 'wind') {
@@ -690,7 +816,7 @@ function renderDetail(key) {
     const maxG = HOURS.slice(0, 24).reduce((a, h) => Math.max(a, h.gust), 0);
     return { title: STR.wind, icon: 'wind', html: '<div class="big"><b>' + w[0] + '</b><span>' + w[1] + '</span><span class="dir">' + STR.dirsL[dir8(H.wdir)] + '</span></div>' +
       '<div style="display:flex;justify-content:center;margin:.6rem 0 .2rem">' + compass(H.wdir, 170, 'cmp') + '</div>' +
-      chart({ w: W, h: 180, n, min: 0, max: mx, series: [{ v: sp, color: '#9fd3ff', area: '#9fd3ff' }, { v: gu, color: 'rgba(255,255,255,.65)', dash: '3 4', width: 1.6 }], night, xl, yl: v => fW(v)[0], mark }) +
+      chart({ w: W, h: 180, n, min: 0, max: mx, series: [{ v: sp, color: '#9fd3ff', area: '#9fd3ff' }, { v: gu, color: 'rgba(255,255,255,.65)', dash: '3 4', width: 1.6 }], night, xl, yl: v => fW(v)[0], rl: v => fW(v).join(' '), mark }) +
       '<div class="stats">' + stat(STR.gusts, fW(H.gust).join(' ')) + stat(STR.gust24, fW(maxG).join(' ')) + '</div>' };
   }
   if (key === 'sun') {
@@ -722,7 +848,7 @@ function renderDetail(key) {
     sampleAt((colS[heroCol] || 0) + 3, TMP);
     const d3 = TMP.pres - H.pres;
     return { title: STR.pres, icon: 'gauge', html: '<div class="big"><b>' + Math.round(H.pres) + '</b><span>hPa</span></div><p class="lede">' + (d3 > 0.6 ? STR.presUp : d3 < -0.6 ? STR.presDown : STR.presSteady) + '</p>' +
-      chart({ w: W, h: 190, n, min: mn, max: mx, series: [{ v: pr, color: '#d9c3ff', area: '#d9c3ff' }], night, xl, yl: v => Math.round(v), mark }) +
+      chart({ w: W, h: 190, n, min: mn, max: mx, series: [{ v: pr, color: '#d9c3ff', area: '#d9c3ff' }], night, xl, yl: v => Math.round(v), rl: v => Math.round(v) + ' hPa', mark }) +
       '<div class="stats">' + stat(STR.change3, (d3 >= 0 ? '+' : '−') + Math.abs(d3).toFixed(1) + ' hPa') + stat(STR.range48, Math.round(Math.min(...pr)) + '–' + Math.round(Math.max(...pr))) + '</div>' };
   }
   if (key === 'aqi' && AQ) {
@@ -959,7 +1085,7 @@ function boot() {
   }, 60000);
   installManifest();
   registerSW();
-  window.ciel = { CONFIG, P, T, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; },
+  window.ciel = { CONFIG, P, T, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, s: Array.from(EX.s).map(v => +v.toFixed(1)) }; },
     // self-check of the celestial frame: the sun's RA/dec recovered from the local→equatorial matrix vs. the ephemeris
     sky: () => { const e = [0, 1, 2].map(i => EQM[i] * SUND[0] + EQM[3 + i] * SUND[1] + EQM[6 + i] * SUND[2]); return { ra: Math.atan2(e[1], e[0]), dec: Math.asin(e[2]), sra: A.sra, sdec: A.sdec }; } };
 }
