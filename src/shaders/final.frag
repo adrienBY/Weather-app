@@ -66,7 +66,7 @@ void main() {
   if (uBgBlur > 0.001) {
     vec3 bl = bspline(uBlur, uv);
     vec3 wash = (bspline(uBlur, vec2(0.2, uv.y)) + bspline(uBlur, vec2(0.5, uv.y)) + bspline(uBlur, vec2(0.8, uv.y))) / 3.0;
-    vec3 bg = mix(bl, wash, 0.6);
+    vec3 bg = mix(bl, wash, 0.3);
     float l = dot(bg, vec3(0.2126, 0.7152, 0.0722));
     bg = mix(vec3(l), bg, 1.15) * 0.74;
     base = mix(base, bg, uBgBlur);

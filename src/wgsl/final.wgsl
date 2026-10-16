@@ -57,7 +57,7 @@ fn hash12(p: vec2f) -> f32 {
   if (sb > 0.001) {
     let bl = bspline(uv);
     let wash = (bspline(vec2f(0.2, uv.y)) + bspline(vec2f(0.5, uv.y)) + bspline(vec2f(0.8, uv.y))) / 3.0;
-    var bg = mix(bl, wash, 0.6);
+    var bg = mix(bl, wash, 0.3);
     let l = dot(bg, vec3f(0.2126, 0.7152, 0.0722));
     bg = mix(vec3f(l), bg, 1.15) * 0.74;
     base = mix(base, bg, sb);
