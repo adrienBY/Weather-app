@@ -1,7 +1,8 @@
 #version 300 es
 /* Dual-Kawase downsample (Marius Bjørge, SIGGRAPH 2015): 5 bilinear taps
-   average ~16 source texels while halving resolution. Three of these give
-   the wide, smooth blur the glass widgets refract. */
+   average ~16 source texels while halving resolution. Five of these (down
+   to 1/32) and three up.frag passes give the widget material its wide,
+   smooth ~30 pt blur. */
 precision mediump float;
 uniform sampler2D uSrc;
 uniform vec2 uDst;      // destination size

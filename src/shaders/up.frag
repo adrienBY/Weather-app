@@ -1,6 +1,6 @@
 #version 300 es
-/* Dual-Kawase upsample: 8 taps in a diamond — smooths the 1/8 level so the
-   glass blur has no blocky texels. */
+/* Dual-Kawase upsample: 8 taps in a diamond — climbs the blur back from
+   1/32 to 1/4 with no blocky texels. */
 precision mediump float;
 uniform sampler2D uSrc;
 uniform vec2 uDst;

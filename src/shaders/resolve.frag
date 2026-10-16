@@ -8,6 +8,7 @@ uniform sampler2D uHist;
 uniform vec2  uFreshRes;
 uniform vec2  uJit;
 uniform float uFill;         // 1 right after a resize / first frame
+uniform float uBlend;        // weight of a fresh sample: low when the sky is steady (more samples averaged), high while scrubbing
 out vec4 o;
 void main() {
   vec2 px = floor(gl_FragCoord.xy);
@@ -19,6 +20,6 @@ void main() {
   // the traced pixel takes its own sample half-and-half with the bilinear
   // neighbourhood (4 rays with 4 different jitters) — a cheap spatial filter
   // that removes the variance floor a pure EMA would leave at hard cloud rims
-  vec4 r = mix(mix(hist, freshB, 0.05), mix(hist, mix(fresh, freshB, 0.5), 0.25), mine);
+  vec4 r = mix(mix(hist, freshB, uBlend * 0.2), mix(hist, mix(fresh, freshB, 0.5), uBlend), mine);
   o = mix(r, freshB, uFill);
 }
