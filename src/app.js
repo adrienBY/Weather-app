@@ -480,7 +480,7 @@ let stepIdx = 0;
 { let best = 1e9; STEPS.forEach((s, i) => { const d = Math.abs(s - CONFIG.quality.scale); if (d < best) { best = d; stepIdx = i; } }); }
 let cssW = innerWidth, cssH = innerHeight, dpr = 1, cw = 2, ch = 2;
 let emaMs = 0, underSince = 0, lastStep = 0, lastUpAt = -1e9, ceilIdx = 1e9, ceilUntil = 0;
-let refreshMs = 0, winMin = 1e9, winStart = 0;
+let refreshMs = 0, winMin = 1e9, winStart = 0, halfRate = false;
 
 function applyScale() {
   const s = STEPS[stepIdx];
@@ -507,8 +507,12 @@ function sizeClouds() {
 function governor(now, ms) {
   // never resize mid-gesture or mid-transition: a resize reallocates every buffer (a
   // hitch) and restarts the cloud history (a flicker) right when motion is most visible
-  if (EX.active || SC.mode !== 0 || CS.on || scrubbing) { underSince = 0; return; }
   emaMs = emaMs ? emaMs + (ms - emaMs) * 0.08 : ms;
+  // while the UI is moving: never resize; relieve the GPU instead by tracing the sky every other frame
+  // (the UI transforms still run at full rate). Hysteresis so it does not flap.
+  const lim = gpuTimed ? CONFIG.quality.downMs : refreshMs * 1.2;
+  halfRate = emaMs > lim * (halfRate ? 0.85 : 1);
+  if (uiBusy() || MF.p !== MF.tgt || MF.v !== 0 || scrubbing) { underSince = 0; return; }
   if (now - lastStep < 700) return;
   const q = CONFIG.quality;
   const down = gpuTimed ? q.downMs : refreshMs * 1.18, up = gpuTimed ? q.upMs : refreshMs * 1.04;
@@ -571,12 +575,13 @@ const MOON_E = 1 / 110;          // moonlight relative to sunlight (artistic: ~1
 // galactic ← equatorial (J2000), rows = galactic x (centre), y (l = 90°), z (north galactic pole)
 const GAL = [-0.0548755604, -0.8734370902, -0.4838350155, 0.4941094279, -0.4448296300, 0.7469822445, -0.8676661490, -0.1980763734, 0.4559837762];
 
+let nativeVel = 0;
 function frame(now) {
   rafId = requestAnimationFrame(frame);
   let dt = lastT ? (now - lastT) * 0.001 : 1 / 120;
   lastT = now;
   if (dt > 0.1) dt = 0.1;
-  idle = now - lastInteract > CONFIG.quality.idleAfterMs && !uiBusy();
+  idle = now - lastInteract > CONFIG.quality.idleAfterMs && !uiBusy() && MF.p === MF.tgt;
   if (idle) {
     idleAcc += dt;
     if (idleAcc < 1 / CONFIG.quality.idleFps - 0.004) return;
@@ -584,12 +589,16 @@ function frame(now) {
   } else {
     idleAcc = 0;
     if ((gl || gpu) && !gpuTimed) {
-      if (now - winStart > 1000) { if (winMin < 1e8) refreshMs = refreshMs ? lerp(refreshMs, winMin, 0.3) : winMin; winMin = 1e9; winStart = now; }
+      if (now - winStart > 1000) { if (winMin < 1e8) refreshMs = refreshMs ? Math.min(refreshMs, Math.max(winMin, 4)) : Math.max(winMin, 4); winMin = 1e9; winStart = now; }   // ratchet: once a 120 Hz frame was seen, that stays the target
       const ms = dt * 1000; if (ms < winMin) winMin = ms;
       if (refreshMs) governor(now, ms);
     }
   }
   uiUpdate(dt);
+  if (window.CielNative) {   // tell Android how fast the (custom-scrolled) content moves, so it keeps the high refresh rate
+    const v = Math.min(4000, Math.abs(SC.v) + Math.abs(MF.v) * heroH) | 0;
+    if (v !== nativeVel && (v > 0 || nativeVel > 0)) { nativeVel = v; try { window.CielNative.velocity(v); } catch (e) { window.CielNative = null; } }
+  }
   drawFrame(dt);
   frames++;
 }
@@ -751,7 +760,8 @@ function render(dt) {
   // dimmed through a heavy blur: keep the last traced clouds and give the frame budget
   // to the transition. Live again as soon as the sky has to follow a scrub, and from
   // the last third of the way back, so the history has converged when the sheet lands
-  const freeze = EX.active && EX.prog > 0.35 && !scrubbing && !CS.on && cloudsOn;
+  const skipSky = halfRate && (frameNo & 1) && cloudsOn && !scrubbing && !CS.on;
+  const freeze = (EX.active && EX.prog > 0.35 && !scrubbing && !CS.on && cloudsOn) || skipSky;
   if (freeze) { /* history kept as it is */ }
   else if (cov > 0.008 && texShape) {
     cloudsOn = true;
@@ -800,7 +810,7 @@ function render(dt) {
     glassDirty = dropsAlive > 0;
   }
   // 5. sky → texture — behind a sheet at rest only its blur shows: every other frame is enough
-  const reuse = EX.rest && !scrubbing && !CS.on && (frameNo & 1);
+  const reuse = (EX.rest && !scrubbing && !CS.on && (frameNo & 1)) || skipSky;
   let u;
   if (!reuse) {
     toRT(skyT); gl.useProgram(PR.sky); u = UL.sky;
