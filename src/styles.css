@@ -34,8 +34,8 @@ svg{display:block}
 /* ── custom-scrolled page: the transform is written in the same frame as the GL glass ── */
 #viewport{position:fixed;inset:0;overflow:hidden;touch-action:none;
   /* scroll-edge effect: page text dissolves under the top bar instead of colliding with it */
-  -webkit-mask-image:linear-gradient(180deg,transparent calc(var(--sat) + 2.6rem),#000 calc(var(--sat) + 5.25rem));
-          mask-image:linear-gradient(180deg,transparent calc(var(--sat) + 2.6rem),#000 calc(var(--sat) + 5.25rem))}
+  --edge:linear-gradient(180deg,transparent calc(var(--sat) + 2.6rem),rgba(0,0,0,.10) calc(var(--sat) + 3.13rem),rgba(0,0,0,.35) calc(var(--sat) + 3.66rem),rgba(0,0,0,.65) calc(var(--sat) + 4.19rem),rgba(0,0,0,.90) calc(var(--sat) + 4.72rem),#000 calc(var(--sat) + 5.25rem));
+  -webkit-mask-image:var(--edge);mask-image:var(--edge)}
 #content{position:relative;transform-origin:0 0;will-change:transform;
   padding:0 calc(var(--sar) + var(--gut)) calc(var(--sab) + 2rem) calc(var(--sal) + var(--gut))}
 
@@ -122,8 +122,14 @@ footer a{color:var(--ui2);text-decoration:none}
 /* ── top bar: scroll-edge dissolve + compact title once the hero has scrolled away ── */
 #bar{position:fixed;left:0;right:0;top:0;z-index:3;display:flex;align-items:center;gap:.15rem;
   padding:calc(var(--sat) + .25rem) calc(var(--sar) + .5rem) .25rem calc(var(--sal) + var(--gut));pointer-events:none}
-#bar::before{content:"";position:absolute;inset:0 0 -1.5rem 0;z-index:-1;opacity:var(--bar,0);
-  background:linear-gradient(180deg,rgba(4,7,16,.78) 0%,rgba(4,7,16,.52) 55%,rgba(4,7,16,0) 100%)}
+/* the top edge: an eased (smoothstep) tint with a frosted layer that melts away under it —
+   no visible band where the gradient starts or ends */
+#bar::before{content:"";position:absolute;inset:0 0 -2.4rem 0;z-index:-1;opacity:var(--bar,0);
+  background:linear-gradient(180deg,rgba(4,7,16,.80) 0%,rgba(4,7,16,.76) 16%,rgba(4,7,16,.64) 30%,rgba(4,7,16,.46) 46%,rgba(4,7,16,.28) 62%,rgba(4,7,16,.13) 77%,rgba(4,7,16,.04) 90%,rgba(4,7,16,0) 100%)}
+#bar::after{content:"";position:absolute;inset:0 0 -2.4rem 0;z-index:-2;opacity:var(--bar,0);pointer-events:none;
+  -webkit-backdrop-filter:blur(12px) saturate(1.25);backdrop-filter:blur(12px) saturate(1.25);
+  -webkit-mask-image:linear-gradient(180deg,#000 0%,#000 28%,rgba(0,0,0,.8) 44%,rgba(0,0,0,.5) 60%,rgba(0,0,0,.22) 76%,rgba(0,0,0,.06) 90%,transparent 100%);
+          mask-image:linear-gradient(180deg,#000 0%,#000 28%,rgba(0,0,0,.8) 44%,rgba(0,0,0,.5) 60%,rgba(0,0,0,.22) 76%,rgba(0,0,0,.06) 90%,transparent 100%)}
 /* the compact title: its three parts are the landing places of the hero's city, temperature and
    condition (see the morphs in ui.js), so each is its own box that can be moved and faded */
 #mini{flex:1;min-width:0;font-size:1.0625rem;font-weight:600;letter-spacing:var(--t17);white-space:nowrap}
@@ -227,7 +233,7 @@ footer a{color:var(--ui2);text-decoration:none}
 #sheet .sc{border-radius:1.6rem;padding:.875rem;max-height:80vh;display:flex;flex-direction:column;transform-origin:calc(100% - 4rem) 1rem;
   background:rgba(28,32,46,.84);box-shadow:0 30px 80px -20px rgba(0,0,0,.8),inset 0 1px 0 rgba(255,255,255,.1);
   opacity:0;transform:scale(.94) translateY(-6px);-webkit-backdrop-filter:blur(0);backdrop-filter:blur(0);
-  transition:opacity .22s var(--ease),transform .32s var(--ease),backdrop-filter .32s var(--ease),-webkit-backdrop-filter .32s var(--ease)}
+  transition:opacity .22s var(--ease),transform .32s var(--ease)}
 #sheet.open .sc{opacity:1;transform:none;-webkit-backdrop-filter:blur(26px) saturate(1.5);backdrop-filter:blur(26px) saturate(1.5)}
 .srow{display:flex;gap:.5rem}
 #q{flex:1;min-width:0;min-height:3rem;padding:0 1rem;border-radius:1rem;outline:none;user-select:text;-webkit-user-select:text;

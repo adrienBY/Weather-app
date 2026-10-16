@@ -189,6 +189,7 @@ function measureWidgets() {
     let x = 0, y = 0, n = w.el;
     while (n && n !== content) { x += n.offsetLeft; y += n.offsetTop; n = n.offsetParent; }
     w.x = x; w.y = y; w.w = w.el.offsetWidth; w.h = w.el.offsetHeight; w.vis = w.w > 0 && w.h > 0;
+    if (w.pop === undefined && w.vis) { w.pop = w.popT = (w.inHero || w.y - SC.y < cssH * 0.94) ? 1 : 0; w.popV = 0; w.popWait = 0; }   // already on screen at launch: no entrance
     w.r = w.el.classList.contains('pill') ? w.h / 2 : (parseFloat(getComputedStyle(w.el).borderTopLeftRadius) || 24);
   }
   heroH = heroEl.offsetHeight || 600;
@@ -197,7 +198,23 @@ function measureWidgets() {
   if (MF.items.length) measureMorph();
 }
 let lastCT = '', lastHT = '', lastHO = '', lastBar = '';
+// Entrance: a widget springs in (rises, grows, fades) the moment it reaches the lower part of the
+// screen — the same spring as the temperature's flight, played to the end even if you stop scrolling.
+// Offscreen below the fold it is re-armed, so it pops again on the way back down.
+const POP_Y = 26;
+let popStagger = 0;
+function popUpdate(w, dt) {
+  const top = w.y - SC.y;
+  if (w.popT === 0 && w.vis && top < cssH * 0.94) { w.popT = 1; w.popWait = popStagger; popStagger += 0.05; }
+  else if (w.popT === 1 && top > cssH + 80) { w.popT = 0; w.pop = 0; w.popV = 0; w.popWait = 0; }
+  if (w.popWait > 0) { w.popWait -= dt; POPB = true; return; }
+  if (w.pop !== w.popT || w.popV !== 0) {
+    w.popV = springTo(w.pop, w.popV, w.popT, calm ? 0.3 : 0.55, 0.88, dt, SCR, 0); w.pop = SCR[0];
+    if (Math.abs(w.pop - w.popT) < 1e-3 && Math.abs(w.popV) < 1e-3) { w.pop = w.popT; w.popV = 0; } else POPB = true;
+  }
+}
 function uiUpdate(dt) {
+  POPB = false; popStagger = 0;
   scrollUpdate(dt);
   expandUpdate(dt);
   chartUpdate(dt);
@@ -212,7 +229,16 @@ function uiUpdate(dt) {
       if (Math.abs(w.press - w.pressT) < 1e-3 && Math.abs(w.pressV) < 1e-3) { w.press = w.pressT; w.pressV = 0; }
     }
     const s = 1 - 0.03 * w.press;
-    if (EX.w !== w && Math.abs(s - w.lastS) > 1e-4) { w.el.style.transform = 'scale(' + s.toFixed(4) + ')'; w.lastS = s; }   // (the zooming widget's transform belongs to the transition)
+    if (w.pop !== undefined && !w.inHero) popUpdate(w, dt);
+    if (EX.w !== w) {   // (the zooming widget's transform belongs to the transition)
+      const pp = w.pop === undefined ? 1 : w.pop, sc = calm ? s : s * (0.88 + 0.12 * pp), ty = calm ? 0 : (1 - pp) * POP_Y, op = w.inHero ? 1 : sstep(0, 0.6, pp);
+      const lk = sc.toFixed(4) + '|' + ty.toFixed(2) + '|' + op.toFixed(3);
+      if (lk !== w.lk) {
+        w.el.style.transform = (ty > 0.01 || ty < -0.01 ? 'translate3d(0,' + ty.toFixed(2) + 'px,0) ' : '') + 'scale(' + sc.toFixed(4) + ')';
+        if (!w.inHero) w.el.style.opacity = op >= 0.999 ? '' : op.toFixed(3);
+        w.lk = lk; w.lastS = s;
+      }
+    }
     if (w.press > pressAmt) { pressAmt = w.press; pressSlot = w.slot; }
   }
   // hero parallax, compact title, page push-back while a sheet is open
@@ -242,13 +268,14 @@ function uiUpdate(dt) {
   for (let i = 0; i < SHEET_SLOT; i++) {
     const o = i * 4, w = WG[i];
     if (!w || !w.vis || !CONFIG.glassWidgets) { RECTP[o + 1] = 0; continue; }
-    const ps = 1 - 0.03 * w.press;
+    const pp = w.inHero || w.pop === undefined ? 1 : w.pop;
+    const ps = (1 - 0.03 * w.press) * (calm ? 1 : 0.88 + 0.12 * pp);
     let ww = w.w * ps, hh = w.h * ps;
-    let x = w.x + (w.w - ww) / 2, yy = w.y - y + (w.inHero ? heroShift : 0) + (w.h - hh) / 2;
+    let x = w.x + (w.w - ww) / 2, yy = w.y - y + (w.inHero ? heroShift : 0) + (w.h - hh) / 2 + (calm ? 0 : (1 - pp) * POP_Y);
     x = (1 - s) * cx + s * x; yy = (1 - s) * cy + s * yy; ww *= s; hh *= s;
     // while it zooms, the widget's own glass is off: the sheet slot is drawn with exactly
     // its material at rest, so the swap at either end of the transition is invisible
-    let m = (w.inHero ? heroAlpha : 1) * (EX.w === w ? 0 : 1);
+    let m = (w.inHero ? heroAlpha : sstep(0, 0.6, pp)) * (EX.w === w ? 0 : 1);
     if (yy + hh < -30 || yy > cssH + 30) m = 0;
     RECT[o] = (x + ww / 2) * kx; RECT[o + 1] = ch - (yy + hh / 2) * ky; RECT[o + 2] = ww / 2 * kx; RECT[o + 3] = hh / 2 * ky;
     RECTP[o] = w.r * ps * s * kx; RECTP[o + 1] = m; RECTP[o + 2] = w.thick; RECTP[o + 3] = w.seed;
@@ -265,7 +292,8 @@ function uiUpdate(dt) {
   const lx = -0.45 + tiltX * 0.55, ly = 0.89 - tiltY * 0.35, ll = Math.hypot(lx, ly) || 1;
   LIGHT_X = lx / ll; LIGHT_Y = ly / ll;
 }
-function uiBusy() { return SC.mode !== 0 || EX.active || CS.on || (pressW && pressW.press > 0.001); }
+let POPB = false;
+function uiBusy() { return POPB || SC.mode !== 0 || EX.active || CS.on || (pressW && pressW.press > 0.001); }
 
 /* =============================================================================
    Shared-element morphs ("matched geometry"). When the same information is
@@ -516,7 +544,7 @@ function expandUpdate(dt) {
     if (done) {
       EX.active = false; EX.rest = false; detail.classList.remove('on');
       const w = EX.w;
-      w.el.style.opacity = '1'; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press;
+      w.el.style.opacity = '1'; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
       for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
       SMP.length = 0;
       EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
