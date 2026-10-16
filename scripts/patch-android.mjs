@@ -31,6 +31,7 @@ fs.writeFileSync(activity, `package ${pkg};
 
 import android.os.Build;
 import android.os.Bundle;
+import android.webkit.JavascriptInterface;
 import android.view.Display;
 import android.webkit.WebView;
 import android.view.WindowManager;
@@ -42,6 +43,18 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
         requestHighRefreshRate();
         requestHighFrameRate();
+        try {
+            WebView wv = getBridge() != null ? getBridge().getWebView() : null;
+            if (wv != null) wv.addJavascriptInterface(new Object() {
+                @JavascriptInterface public void velocity(final float pxPerSec) {
+                    runOnUiThread(() -> {
+                        if (Build.VERSION.SDK_INT >= 35) {
+                            try { wv.setFrameContentVelocity(pxPerSec * getResources().getDisplayMetrics().density); } catch (Throwable ignored) { }
+                        }
+                    });
+                }
+            }, "CielNative");
+        } catch (Throwable ignored) { }
     }
 
     @Override
