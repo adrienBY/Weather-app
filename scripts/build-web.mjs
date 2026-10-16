@@ -1,9 +1,11 @@
 // Builds www/index.html — the single-file app — from the split sources in src/:
 //   src/index.html     skeleton with @@STYLES@@ / @@SHADERS@@ / @@APP@@
 //   src/styles.css     all CSS (font inlined at __FONT_B64__)
-//   src/shaders/*      GLSL ES 3.00, each inlined as <script type="x-shader" id="<file name>">
+//   src/shaders/*      GLSL ES 3.00 (WebGL2 fallback), each inlined as <script type="x-shader" id="<file name>">
+//   src/wgsl/*         WGSL twins of every shader (WebGPU, preferred), inlined the same way
 //                      (*.glsl are shared chunks, pulled in by `#include` at compile time)
-//   src/app.js         CONFIG, astronomy, data model, WebGL pipeline   (…//@@UI@@)
+//   src/app.js         CONFIG, astronomy, data model, WebGL2 pipeline   (…//@@GPU@@ //@@UI@@)
+//   src/gpu.js         WebGPU pipeline
 //   src/ui.js          scrolling, widgets, expand transitions, data fetching, PWA
 //
 // Real assets are fetched from their pinned upstream sources, processed with
@@ -100,15 +102,16 @@ const milky = await sharp(await get('milkyway', SRC.milky)).resize(1024, 512, { 
 const font = fs.readFileSync(path.join(root, 'node_modules/@fontsource-variable/inter/files/inter-latin-opsz-normal.woff2'));
 
 // shaders → inline script blocks (text is read back by app.js via textContent)
-const shaderDir = path.join(root, 'src/shaders');
-const shaders = fs.readdirSync(shaderDir).filter(f => /\.(vert|frag|glsl)$/.test(f)).sort().map(f => {
-  const code = fs.readFileSync(path.join(shaderDir, f), 'utf8');
+const shaderFiles = [['src/shaders', /\.(vert|frag|glsl)$/], ['src/wgsl', /\.wgsl$/]].flatMap(([d, re]) =>
+  fs.readdirSync(path.join(root, d)).filter(f => re.test(f)).sort().map(f => path.join(root, d, f)));
+const shaders = shaderFiles.map(file => {
+  const f = path.basename(file), code = fs.readFileSync(file, 'utf8');
   if (code.includes('</script')) throw new Error(f + ' contains </script');
   return `<script type="x-shader" id="${f}">\n${code.trim()}\n</script>`;
 }).join('\n');
 
 const css = rd('src/styles.css').replace('__FONT_B64__', font.toString('base64'));
-const app = rd('src/app.js').replace('//@@UI@@', () => rd('src/ui.js'))
+const app = rd('src/app.js').replace('//@@GPU@@', () => rd('src/gpu.js')).replace('//@@UI@@', () => rd('src/ui.js'))
   .replace('__DROP_B64__', drop.toString('base64'))
   .replace('__SHAPE_B64__', shape.toString('base64')).replace('__EROSION_B64__', erosion.toString('base64'))
   .replace('__WEATHER_B64__', weather.toString('base64')).replace('__MILKY_B64__', milky.toString('base64'));

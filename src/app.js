@@ -22,6 +22,7 @@ const CONFIG = {
     idleFps: 30,
   },
   glassWidgets: true,         // shader glass behind widgets (false → flat CSS panels)
+  renderer: 'auto',           // 'auto' (WebGPU, else WebGL2) | 'webgl' — also ?renderer=webgl
   sky: {
     horizon: 0.24,            // horizon height (fraction of the screen)
     fov: 76,                  // vertical field of view, degrees
@@ -291,7 +292,7 @@ function updateTargets() { sampleAt(scrubTarget, S); deriveTargets(S); T[I_SCRUB
      buffer) → resolve (temporal) → drops → sky → material blur (5 down,
      3 up) → widgets
    ============================================================================= */
-const canvas = $('sky');
+let canvas = $('sky');
 let gl = null, tq = null, gpuTimed = false;
 const PR = {}, UL = {};
 let vaoEmpty, vaoDrop, dropBuf, texNoise, texDrop = null, texShape = null, texErosion = null, texWeather = null, texMilky = null, texBlack = null;
@@ -395,6 +396,7 @@ function tex2D(img, wrapS, wrapT, mip) {
 async function loadAssets() {
   try {
     const [shape, erosion, weather, milky] = await Promise.all([ASSETS.shape, ASSETS.erosion, ASSETS.weather, ASSETS.milky].map(decode));
+    if (gpu) { gpuAssets(shape, erosion, weather, milky); return; }
     if (!gl) return;
     texShape = volumeFromStrip(shape, 64); texErosion = volumeFromStrip(erosion, 32);
     texWeather = tex2D(weather, gl.REPEAT, gl.REPEAT, true);
@@ -484,6 +486,7 @@ function applyScale() {
   const s = STEPS[stepIdx];
   cw = Math.max(8, Math.round(cssW * dpr * s)); ch = Math.max(8, Math.round(cssH * dpr * s));
   canvas.width = cw; canvas.height = ch;
+  if (gpu) { gpuApplyScale(); return; }
   if (!gl) return;
   sizeClouds();
   rtSize(glassT, Math.max(2, Math.round(cw / 2)), Math.max(2, Math.round(ch / 2)));
@@ -497,7 +500,8 @@ const BAND = new Float32Array([HZ, CONFIG.sky.bankTop]);
 function sizeClouds() {
   const q = CONFIG.quality;
   const hw = 2 * Math.max(2, Math.ceil(cw * q.cloudRes / 2)), hh = 2 * Math.max(2, Math.ceil(ch * (BAND[1] - BAND[0]) * q.cloudRes / 2));
-  rtSize(cHist[0], hw, hh); rtSize(cHist[1], hw, hh); rtSize(cFresh, hw / 2, hh / 2);
+  if (gpu) gpuSizeClouds(hw, hh);
+  else { rtSize(cHist[0], hw, hh); rtSize(cHist[1], hw, hh); rtSize(cFresh, hw / 2, hh / 2); }
   fillFrames = 3;
 }
 function governor(now, ms) {
@@ -579,15 +583,19 @@ function frame(now) {
     dt = idleAcc; idleAcc = 0;
   } else {
     idleAcc = 0;
-    if (gl && !gpuTimed) {
+    if ((gl || gpu) && !gpuTimed) {
       if (now - winStart > 1000) { if (winMin < 1e8) refreshMs = refreshMs ? lerp(refreshMs, winMin, 0.3) : winMin; winMin = 1e9; winStart = now; }
       const ms = dt * 1000; if (ms < winMin) winMin = ms;
       if (refreshMs) governor(now, ms);
     }
   }
   uiUpdate(dt);
-  if (gl) { update(dt); render(dt); }
+  drawFrame(dt);
   frames++;
+}
+function drawFrame(dt) {
+  if (gpu) { update(dt); gpuRender(dt); }
+  else if (gl) { update(dt); render(dt); }
 }
 
 // light regime weights from the sun's elevation (used for snow / fog / moon tint)
@@ -861,4 +869,5 @@ function start() { if (!rafId && !document.hidden) { lastT = 0; rafId = requestA
 function stop() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; }
 function markInteraction() { lastInteract = performance.now(); }
 
+//@@GPU@@
 //@@UI@@
