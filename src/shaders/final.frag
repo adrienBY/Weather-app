@@ -28,6 +28,7 @@ uniform highp vec4  uPress;     // xy px, amount, slot
 uniform vec2  uLight;           // highlight direction (screen, unit)
 uniform highp float uTime;
 uniform float uDim;             // background dim while a sheet is open (slot N-1)
+uniform float uBgBlur;          // how far the page has scrolled over the sky (0..1)
 out vec4 o;
 
 float sdRBox(highp vec2 p, highp vec2 b, float r) {
@@ -60,6 +61,16 @@ void main() {
   highp vec2 px = gl_FragCoord.xy;
   highp vec2 uv = px / uRes;
   vec3 base = texture(uSky, vec2(uv)).rgb;
+  // scrolled down: the sky stays where it is but goes soft and settles into its own blurred
+  // colour (the blur, averaged across the width so no cloud edge is left), a touch deeper
+  if (uBgBlur > 0.001) {
+    vec3 bl = bspline(uBlur, uv);
+    vec3 wash = (bspline(uBlur, vec2(0.2, uv.y)) + bspline(uBlur, vec2(0.5, uv.y)) + bspline(uBlur, vec2(0.8, uv.y))) / 3.0;
+    vec3 bg = mix(bl, wash, 0.6);
+    float l = dot(bg, vec3(0.2126, 0.7152, 0.0722));
+    bg = mix(vec3(l), bg, 1.15) * 0.74;
+    base = mix(base, bg, uBgBlur);
+  }
 
   // pick the top-most widget under this pixel (later slots win) + accumulate shadows
   highp vec4 R = vec4(0.0, 0.0, 1.0, 1.0);

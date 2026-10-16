@@ -7,7 +7,7 @@ const N = 10;
 struct U {
   resTime: vec4f,      // xy res, z time, w background dim (slot N-1)
   press: vec4f,        // xy px (y up), amount, slot
-  light: vec4f,        // xy highlight direction
+  light: vec4f,        // xy highlight direction, z how far the page has scrolled over the sky (0..1)
   rect: array<vec4f, 10>,    // centre xy, half size xy — pixels, y up
   rectP: array<vec4f, 10>,   // radius px, materialise 0..1, thickness 0..1, seed
 };
@@ -50,7 +50,18 @@ fn hash12(p: vec2f) -> f32 {
   let dim = u.resTime.w;
   let px = vec2f(pos.x, res.y - pos.y);       // the screen, in GL's frame (y up)
   let uv = px / res;
-  let base = textureSampleLevel(tSky, sClamp, uv, 0.0).rgb;
+  var base = textureSampleLevel(tSky, sClamp, uv, 0.0).rgb;
+  // scrolled down: the sky stays where it is but goes soft and settles into its own blurred
+  // colour (the blur, averaged across the width so no cloud edge is left), a touch deeper
+  let sb = u.light.z;
+  if (sb > 0.001) {
+    let bl = bspline(uv);
+    let wash = (bspline(vec2f(0.2, uv.y)) + bspline(vec2f(0.5, uv.y)) + bspline(vec2f(0.8, uv.y))) / 3.0;
+    var bg = mix(bl, wash, 0.6);
+    let l = dot(bg, vec3f(0.2126, 0.7152, 0.0722));
+    bg = mix(vec3f(l), bg, 1.15) * 0.74;
+    base = mix(base, bg, sb);
+  }
 
   var R = vec4f(0.0, 0.0, 1.0, 1.0);
   var RP = vec4f(0.0);
