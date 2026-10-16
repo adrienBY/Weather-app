@@ -2,22 +2,29 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    CIEL — sky compositor (renders into a texture; final.frag adds the glass)
    Every pixel builds its real view ray from the camera, so the sun, moon,
-   stars, cirrus and lake reflection are all geometrically consistent:
+   stars, Milky Way and lake reflection are geometrically consistent:
      0. refraction      rain drops on the glass, touch ripples, lake splashes
-     1. view ray        pinhole camera facing the equator; below the horizon
-                        the ray is reflected (a still lake)
-     2. gradient        4 lighting regimes from the real solar elevation
-     3. stars           fixed to the celestial sphere, rotated by sidereal
-                        time around the pole — they wheel across the night
-     4. sun & moon      angular disks + Mie-ish glow; true lunar phase
-     5. cirrus          procedural streaks on a high plane
-     6. clouds          the volumetric buffer (premultiplied), re-projected
-     7. lightning, water, rain streaks, snow, fog, dither
+     1. view ray        pinhole camera aimed like a photographer (app.js
+                        aimCamera); below the horizon the ray is reflected
+     2. atmosphere      physically based sky radiance from the sky-view LUTs
+                        (sun + moon) — blue hour, golden hour, the Earth's
+                        shadow and the belt of Venus all fall out of the
+                        physics, at any latitude and season
+     3. night           stars and the real Milky Way (ESO/S. Brunier
+                        panorama), fixed to the celestial sphere and turned by
+                        sidereal time
+     4. sun & moon      limb-darkened sun reddened by the transmittance LUT;
+                        moon with its true phase
+     5. clouds          the volumetric buffer (premultiplied linear radiance)
+     → exposure, ACES filmic tone curve, sRGB
+     6. lightning, water, rain streaks, snow, fog, drops, dither
    No dynamic loops or branches. highp only where angles/coordinates need it.
    ═══════════════════════════════════════════════════════════════════════════ */
 precision mediump float;
 precision mediump sampler2D;
 #define HZ __HZ__
+#define ATMOS_MEDIUMP
+#include atmos.glsl
 
 uniform highp vec2  uRes;
 uniform highp float uTime;
@@ -25,15 +32,22 @@ uniform sampler2D   uNoise;
 uniform sampler2D   uField;
 uniform sampler2D   uClouds;    // volumetric history (covers y ∈ [HZ, 1])
 uniform sampler2D   uGlass;     // drops: rg refraction map, a coverage
+uniform sampler2D   uTrans;     // transmittance LUT
+uniform sampler2D   uSkyS, uSkyM;   // sky-view LUTs: sun, moon
+uniform sampler2D   uMilky;     // Milky Way, galactic plate carrée
 uniform highp vec3  uCamF, uCamU, uCamR;
 uniform highp vec2  uTan;
-uniform highp mat3  uStarRot;
+uniform highp mat3  uEqRot;     // local → equatorial (turns with sidereal time)
+uniform highp mat3  uGalRot;    // local → galactic
 uniform highp vec3  uSunDir;
 uniform highp vec3  uMoonDir, uMoonR, uMoonU;
-uniform vec4  uSun;             // x visibility, y sin(elevation), z −, w −
+uniform vec4  uSun;             // x disk visibility, y sin(elevation)
 uniform vec4  uMoon;            // x visibility, y illuminated fraction
 uniform vec3  uMoonL;           // light direction on the moon's disk (phase)
-uniform highp vec4 uDrift2;     // xy cirrus drift, zw evolve (wrapped to [0,1))
+uniform vec3  uLight;           // x sun illuminance, y moon illuminance
+uniform float uExposure;
+uniform vec3  uNight;           // linear night-sky floor (airglow / city glow)
+uniform highp vec4 uDrift2;     // zw fog drift (wrapped to [0,1))
 uniform highp vec4 uPhase;      // rain near, rain far, snow near, snow far (wrapped to [0,64))
 uniform vec4  uCloud;           // x low, y mid, z high cover, w precipitation darkness
 uniform vec4  uWx;              // x rain, y snow, z fog, w storm
@@ -41,10 +55,15 @@ uniform vec4  uWind;            // x rain slant, y snow slant
 uniform vec4  uFlash;           // xy screen centre, z intensity, w bolt
 uniform highp vec2 uBolt;
 uniform highp vec4 uRip[6];
-uniform vec3  uPal[5];          // dayZenith, dayHorizon, golden, dusk, nightHorizon
-uniform vec4  uW;               // regime weights: night, twilight, golden, day
-uniform vec3  uLit, uShade, uHorizon;
+uniform vec4  uW;               // light regime weights: night, twilight, golden, day
 out vec4 outColor;
+
+// ACES filmic curve (Narkowicz 2015) — highlights roll off instead of clipping
+vec3 aces(vec3 x) { return clamp(x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+// + a photographic saturation lift (a camera's look, not the eye's: physically
+//   the sky is paler than we remember it)
+vec3 toDisplay(vec3 lin) { vec3 c = pow(aces(lin), vec3(1.0 / 2.2)); float l = dot(c, vec3(.2126, .7152, .0722)); return clamp(mix(vec3(l), c, 1.32), 0.0, 1.0); }
+vec3 skyAt(highp vec3 d) { return skyLookup(uSkyS, d, uSunDir) * uLight.x + skyLookup(uSkyM, d, uMoonDir) * uLight.y; }
 
 float hash12(highp vec2 p) {
   highp vec3 p3 = fract(vec3(p.xyx) * .1031);
@@ -55,12 +74,6 @@ vec2 hash22(highp vec2 p) {
   highp vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.xx + p3.yz) * p3.zy);
-}
-float fbm3(highp vec2 q) {
-  float s = texture(uNoise, q).b * .5;
-  s += texture(uNoise, q * 2. + vec2(.71, .53)).a * .25;
-  s += texture(uNoise, q * 4. + vec2(.19, .83)).r * .125;
-  return s * (1. / .875);
 }
 // one star candidate per cell of a cube-face grid; ~1 px wide at any resolution
 float starFace(highp vec2 f, float scale, float thresh, float pxr) {
@@ -78,8 +91,8 @@ float stars(highp vec3 d, float pxr) {
   highp vec3 a = abs(d);
   float mx = step(a.y, a.x) * step(a.z, a.x), my = (1. - mx) * step(a.x, a.y) * step(a.z, a.y), mz = 1. - mx - my;
   highp vec2 fx = d.yz / a.x, fy = d.xz / a.y, fz = d.xy / a.z;
-  float s1 = starFace(fx + sign(d.x) * 3.1, 90., .94, pxr) * mx + starFace(fy + sign(d.y) * 5.7, 90., .94, pxr) * my + starFace(fz + sign(d.z) * 7.3, 90., .94, pxr) * mz;
-  float s2 = starFace(fx + 1.3, 38., .975, pxr) * mx + starFace(fy + 2.9, 38., .975, pxr) * my + starFace(fz + 4.1, 38., .975, pxr) * mz;
+  float s1 = starFace(fx + sign(d.x) * 3.1, 90., .972, pxr) * mx + starFace(fy + sign(d.y) * 5.7, 90., .972, pxr) * my + starFace(fz + sign(d.z) * 7.3, 90., .972, pxr) * mz;
+  float s2 = starFace(fx + 1.3, 38., .984, pxr) * mx + starFace(fy + 2.9, 38., .984, pxr) * my + starFace(fz + 4.1, 38., .984, pxr) * mz;
   return s1 + s2 * 1.5;
 }
 float rainLayer(highp vec2 p, float cols, float rows, highp float phase, float slant, float dens, float len, float wid) {
@@ -153,36 +166,33 @@ void main() {
   highp vec2 cn = vec2(dot(rd, uCamR) / (cz * uTan.x), dot(rd, uCamU) / (cz * uTan.y));
   highp vec2 cuv = vec2(cn.x * .5 + .5, ((cn.y * .5 + .5) - HZ) / (1. - HZ));
 
-  // ── 2. gradient ──────────────────────────────────────────────────────────
+  // ── 2. atmosphere (linear radiance × exposure) ───────────────────────────
   float wN = uW.x, wT = uW.y, wG = uW.z, wD = uW.w, e = uSun.y;
-  float g = clamp(float(rd.y) / .87, 0., 1.);
-  vec2 hs = normalize(vec2(uSunDir.xz) + 1e-4), hr = normalize(vec2(rd.xz) + 1e-4);
-  float side = exp((dot(hr, hs) - 1.) * 1.8);
-  vec3 hG = mix(vec3(.80, .74, .74), uPal[2], .35 + .65 * side);
-  vec3 hT = mix(vec3(.30, .21, .40), uPal[3], side);
-  vec3 sky = wD * mix(uPal[1], uPal[0], pow(g, .50))
-           + wG * mix(hG, vec3(.24, .38, .72), pow(g, .38))
-           + wT * mix(hT, vec3(.05, .07, .20), pow(g, .28))
-           + wN * mix(uPal[4], vec3(0.), pow(g, .20));
   float dayL = wD + wG * .75 + wT * .3;
   float moonLight = uMoon.x * uMoon.y;
   float cover = max(uCloud.x, uCloud.y * .85);
-  float lum0 = dot(sky, vec3(.299, .587, .114));
-  sky = mix(sky, vec3(lum0) * vec3(.92, .95, 1.) * (1. - .5 * uCloud.w), cover * .45);
-  vec3 col = sky;
+  vec3 Ls = skyAt(rd);
+  float lum0 = dot(Ls, vec3(.2126, .7152, .0722));
+  Ls = mix(Ls, vec3(lum0) * vec3(.95, .97, 1.) * (1. - .5 * uCloud.w), smoothstep(.5, 1., cover) * .6);   // a deck greys the sky behind it
+  vec3 col = Ls * uExposure + uNight * (1. - dayL);
 
-  // ── 3. stars ─────────────────────────────────────────────────────────────
+  // ── 3. stars + Milky Way ────────────────────────────────────────────────────────
   float pxr = 2.2 * uTan.y / uRes.y;                       // one pixel, in radians-ish
-  float starVis = wN * (1. - .7 * moonLight) * smoothstep(.0, .12, float(rd.y)) * (1. - uWx.z) * (1. - smoothstep(.45, .9, cover));
-  col += vec3(.82, .88, 1.) * stars(uStarRot * rd, pxr) * starVis;
+  float dark = clamp(1. - lum0 * uExposure * 30., 0., 1.); // stars come out only once the sky is truly dark
+  float starVis = dark * smoothstep(.0, .12, float(rd.y)) * (1. - uWx.z) * (1. - smoothstep(.45, .9, cover));
+  highp vec3 g = uGalRot * rd;
+  highp vec2 guv = vec2(.5 - atan(g.y, g.x) / (2. * PI), .5 - asin(clamp(g.z, -1., 1.)) / PI);
+  vec3 mw = pow(texture(uMilky, vec2(guv)).rgb, vec3(2.2));
+  col += (vec3(.82, .88, 1.) * stars(uEqRot * rd, pxr) * .8 + mw * .7) * starVis;
 
   // ── 4. sun & moon ────────────────────────────────────────────────────────
   highp float cs = dot(rd, uSunDir);
   highp float ds = 1. - cs;
-  vec3 sunC = mix(vec3(1., .52, .24), vec3(1., .96, .88), smoothstep(-.02, .3, e));
-  float glow = (exp(-float(ds) * 18.) * .30 + exp(-float(ds) * 420.) * .55) * smoothstep(-.12, 0., e);
-  float disk = smoothstep(1.35e-4, .95e-4, float(ds)) * uSun.x;
-  col += sunC * (glow * (1. - cover * .6) + disk * 2.2 * (1. - smoothstep(.7, 1., cover)));
+  vec3 sunT = transmit(uTrans, RG + CAM_H, e) * uLight.x;
+  float dr = float(ds) / 1.25e-4;                          // 0 at the centre, 1 at the rim (~0.9°)
+  float disk = (1. - smoothstep(.85, 1., dr)) * (.55 + .45 * sqrt(max(1. - dr, 0.)));   // limb darkening
+  float glare = exp(-float(ds) * 900.) * .9 + exp(-float(ds) * 90.) * .08;
+  col += sunT * (disk * 60. * uSun.x * (1. - smoothstep(.7, 1., cover)) + glare * (1. - cover * .7)) * uExposure * .1;
 
   highp float cm = dot(rd, uMoonDir);
   highp vec2 md = vec2(dot(rd, uMoonR), dot(rd, uMoonU)) / .0245;   // disk radius ≈ 1.4°
@@ -193,23 +203,23 @@ void main() {
   vec3 mn = vec3(vec2(md), sqrt(max(1. - mr2, 0.)));
   float mlit = smoothstep(-.06, .10, dot(mn, uMoonL));
   float mare = texture(uNoise, vec2(md) * .11 + vec2(.43, .17)).r;
-  col = mix(col, col * dayL + vec3(.93, .94, .98) * (.70 + (mare - .5) * .9) * mlit, inMoon);
-  col += vec3(.55, .62, .80) * exp(-float(1. - cm) * 60.) * .10 * moonLight * (1. - dayL) * (1. - cover * .7);
+  vec3 moonT = transmit(uTrans, RG + CAM_H, uMoonDir.y);
+  col = mix(col, col * (1. - dark) + vec3(.95, .93, .88) * moonT * (.70 + (mare - .5) * .9) * mlit * 1.1, inMoon);
+  col += vec3(.75, .80, .95) * exp(-float(1. - cm) * 60.) * .06 * moonLight * dark * (1. - cover * .7);
 
-  // ── 5. cirrus (high plane, true perspective) ─────────────────────────────
-  vec2 disp = texture(uField, vec2(uv.x, ps.y)).xy * 2. - 1.;
-  highp vec2 pl = rd.xz / max(rd.y, .03);
-  highp vec2 qh = pl * vec2(.10, .32) + disp * .05 + uDrift2.xy;
-  float thH = mix(.70, .36, uCloud.z);
-  float aH = smoothstep(thH, thH + .22, fbm3(qh)) * .55 * smoothstep(.0, .08, float(rd.y));
-  vec3 cH = mix(mix(uLit, uShade, .25) + (wG + wT) * vec3(.25, .10, .08), uHorizon, (1. - smoothstep(.0, .25, float(rd.y))) * .5);
-  col = mix(col, cH, aH);
+  // ── 5. volumetric clouds ─────────────────────────────────────────────────
+  // 2×2 box at history resolution: hides the checkerboard of the 4 temporally
+  // interleaved sub-pixels without visibly softening the clouds
+  vec2 ct = vec2(.5) / vec2(textureSize(uClouds, 0));
+  vec4 cl = (texture(uClouds, cuv + vec2(-ct.x, -ct.y)) + texture(uClouds, cuv + vec2(ct.x, -ct.y))
+           + texture(uClouds, cuv + vec2(-ct.x, ct.y)) + texture(uClouds, cuv + vec2(ct.x, ct.y))) * .25;
+  col = col * (1. - cl.a) + cl.rgb * uExposure;
 
-  // ── 6. volumetric clouds ─────────────────────────────────────────────────
-  vec4 cl = texture(uClouds, cuv);
-  col = col * (1. - cl.a) + cl.rgb;
+  // ── → display: filmic tone curve + sRGB ──────────────────────────────────
+  col = toDisplay(col);
+  vec3 hzD = toDisplay(skyAt(normalize(vec3(rd.x, .02, rd.z))) * uExposure + uNight);
 
-  // ── 7. lightning, water, precipitation, fog ──────────────────────────────
+  // ── 6. lightning, water, precipitation, fog ──────────────────────────────
   highp vec2 q = vec2(ps.x, mix(ps.y, 2. * HZ - ps.y, water));
   col += vec3(.72, .78, 1.) * uFlash.z * (.25 + 1.4 * exp(-length(vec2(q - uFlash.xy)) * 4.5)) * (.2 + cl.a * .8);
   highp float by = q.y;
@@ -217,9 +227,12 @@ void main() {
   float bd = abs(float(q.x - bx));
   col += vec3(.85, .88, 1.) * (exp(-bd * uRes.y * .45) + exp(-bd * 40.) * .25) * smoothstep(.70, .52, float(by)) * smoothstep(HZ, HZ + .02, float(by)) * uFlash.z * uFlash.w;
 
+  // the lake darkens with depth, but starts out nearly as bright as the sky it
+  // mirrors, and a band of horizon haze straddles the waterline — no hard seam
   float depth = clamp(float((HZ - p.y) / HZ), 0., 1.);
-  col = mix(col, col * mix(.62, .18, depth) * vec3(.92, .96, 1.), water);
-  col += uHorizon * exp(-abs(float(p.y - HZ)) * 260.) * .10;
+  col = mix(col, col * mix(.86, .16, sqrt(depth)) * vec3(.92, .96, 1.), water);
+  float band = exp(-abs(float(p.y - HZ)) * 34.);
+  col = mix(col, hzD, band * .55) + hzD * exp(-abs(float(p.y - HZ)) * 260.) * .06;
   float lum = dot(col, vec3(.299, .587, .114));
 
   float rain = uWx.x;
@@ -236,16 +249,12 @@ void main() {
 
   float fogN = texture(uNoise, vec2(p.x * .9, p.y * 2.2) + uDrift2.zw).g;
   float fogA = uWx.z * (.50 + .50 * fogN) * (1. - .55 * smoothstep(HZ, .95, float(p.y)));
-  col = mix(col, mix(vec3(.025, .027, .032), vec3(.74, .76, .80), dayL) + uHorizon * .15, clamp(fogA, 0., .92));
+  col = mix(col, mix(vec3(.025, .027, .032), vec3(.74, .76, .80), dayL) * .85 + hzD * .2, clamp(fogA, 0., .92));
 
   float lowRim = smoothstep(.40, .08, gw.r) * ga, spec = smoothstep(.70, .97, gw.g) * smoothstep(.35, .55, gw.r) * ga;
   col = col * (1. - lowRim * .28) * (1. + ga * .06) + spec * (.12 + lum * .45);
   col += rGlow * .07 * (.15 + lum);
 
-  // soft highlight shoulder: glare compresses towards 0.96 instead of clipping
-  // to flat white, so the hero type stays readable over a bright sky
-  vec3 hi = max(col - .72, 0.);
-  col = min(col, .72) + hi / (1. + hi * 4.2);
   float mx = max(col.r, max(col.g, col.b));
   col += (hash12(gl_FragCoord.xy + fract(uTime) * 91.7) - .5) * (1.5 / 255.) * step(.006, mx);
   outColor = vec4(clamp(col, 0., 1.), 1.);
