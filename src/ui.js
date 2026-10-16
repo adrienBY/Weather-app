@@ -272,7 +272,7 @@ function uiBusy() { return SC.mode !== 0 || EX.active || CS.on || (pressW && pre
    ============================================================================= */
 const EX = { active: false, open: false, w: null, s: new Float32Array(5), v: new Float32Array(5), t: new Float32Array(5),
   src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '',
-  ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0, cleanup: 0, rest: false };
+  ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0, rest: false };
 // sheet springs (response s, damping ratio): open and close are critically damped
 // or nearly so — the zoom lands without wobble; a throw back up keeps a little life
 const SP_OPEN = [0.40, 0.9], SP_CLOSE = [0.36, 0.96], SP_BACK = [0.32, 0.82];
@@ -293,30 +293,28 @@ function widgetScreenRect(w, out) {
 }
 function openDetail(w) {
   if (EX.open || !DATA || (EX.active && EX.w !== w)) return;
-  for (const k in CH) delete CH[k];
-  const d = renderDetail(w.key);
-  if (!d) return;
+  const p = buildPane(w.key);            // normally already built and laid out in memory: nothing to do
+  if (!p) return;
   markInteraction();
-  $('dTitle').textContent = d.title;
-  $('dIcon').innerHTML = '<use href="#i-' + d.icon + '"/>';
-  db.innerHTML = d.html; db.scrollTop = 0;
+  setText($('dTitle'), p.title);
+  setHTML($('dIcon'), '<use href="#i-' + p.icon + '"/>');
+  if (activePane !== p) { if (activePane) activePane.el.classList.remove('on'); p.el.classList.add('on'); activePane = p; }
+  db.scrollTop = 0;
   CS.c = null;
-  if (pendingMark && CH[pendingMark[0]]) { chartBind(pendingMark[0], pendingMark[1]); pendingMark = null; }
+  if (p.chart && CH[p.chart]) chartBind(p.chart, clamp(heroCol, 0, nCols - 1));
   const dst = EX.dst;
   dst[0] = 8 + safeL; dst[1] = safeT + 8; dst[2] = cssW - 16 - safeL - safeR; dst[3] = cssH - dst[1] - 8; dst[4] = 34;
   dp.style.left = dst[0] + 'px'; dp.style.top = dst[1] + 'px'; dp.style.width = dst[2] + 'px'; dp.style.height = dst[3] + 'px';
   widgetScreenRect(w, EX.src);
   if (!EX.active) { EX.s.set(calm ? dst : EX.src); EX.v.fill(0); EX.fade = calm ? 0 : 1; }
   EX.t.set(dst); EX.w = w; EX.open = true; EX.active = true; EX.resp = SP_OPEN[0]; EX.zeta = SP_OPEN[1];
-  EX.lastT = ''; EX.fresh = 2;           // building the sheet is one long frame: don't let the springs jump over it
-  clearTimeout(EX.cleanup);
+  EX.lastT = ''; EX.fresh = 2;           // if the sheet had to be built now, that frame is long: don't let the springs jump over it
   EX.w.el.style.transformOrigin = '0 0';
   syncTouchAction();
   void dp.offsetHeight;                  // lay it out now, in the tap, not in the first animated frame
   expandUpdate(0);                       // and write frame 0 now, so nothing shows a stale state
   detail.classList.add('on', 'live'); detail.setAttribute('aria-hidden', 'false');
   try { history.pushState({ ciel: 'detail' }, ''); } catch (e) { }
-  if (d.after) requestAnimationFrame(d.after);
 }
 function closeDetail(fromPop) {
   if (!EX.open) return;
@@ -375,9 +373,7 @@ function expandUpdate(dt) {
       const w = EX.w;
       w.el.style.opacity = '1'; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press;
       EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
-      CS.c = null;
-      // tearing the sheet's DOM down is a long task: never on the frame the transition lands
-      EX.cleanup = setTimeout(() => { if (!EX.active) db.innerHTML = ''; }, 600);
+      CS.c = null;                         // the sheet stays built (and laid out) for next time
     }
   }
 }
@@ -502,6 +498,7 @@ function smoothPath(xs, ys) {
 }
 function renderHours() {
   if (!DATA) return;
+  paneGen++;                                            // new hours: every prebuilt sheet is stale
   const now = Date.now() / 1000, h = DATA.hourly, h0 = hourStart(now), last = h.time[h.time.length - 1];
   colS = [0];
   for (let k = 1; k < 48; k++) { const t = h0 + k * 3600; if (t > last) break; colS.push((t - now) / 3600); }
@@ -559,7 +556,7 @@ function onHScroll() {
     if (colEls[lastCol]) colEls[lastCol].classList.remove('on');
     if (colEls[c]) colEls[c].classList.add('on');
     if (scrubbing && navigator.vibrate) navigator.vibrate(5);         // haptic tick per hour, same frame as the change
-    lastCol = c; heroCol = c; renderHero();
+    lastCol = c; heroCol = c; renderHero(); prewarm(600);
   }
 }
 hscroll.addEventListener('scroll', () => {
@@ -662,7 +659,50 @@ function renderTiles() {
 
 /* =============================================================================
    Detail sheets
+   Every sheet is built ahead of time, in idle moments, and kept in memory as a
+   pane of the sheet body: laid out once, then put to sleep with
+   content-visibility:hidden (the browser keeps its layout and paints nothing).
+   Opening a widget only wakes its pane — no HTML to parse, no layout in the tap.
+   A pane is rebuilt (again in idle time) when what it shows changes: new data,
+   units, the scrubbed hour, the screen size.
    ============================================================================= */
+const SHEETS = ['hours', 'days', 'uv', 'wind', 'sun', 'feels', 'hum', 'pres', 'aqi'];
+const PANES = {};                                       // key → { el, k, title, icon, chart }
+let activePane = null, paneGen = 0, warmTimer = 0, warmQ = [];
+const whenIdle = window.requestIdleCallback ? f => requestIdleCallback(f, { timeout: 1500 }) : f => setTimeout(f, 50);
+const paneKey = () => paneGen + '|' + units + '|' + heroCol + '|' + cssW + '|' + (AQ ? AQ.aqi : '-');
+function buildPane(key) {
+  const k = paneKey();
+  let p = PANES[key];
+  if (p && p.k === k) return p;
+  pendingMark = null;
+  const d = renderDetail(key);
+  if (!d) return p && p.k ? p : null;
+  if (!p) { const el = document.createElement('div'); el.className = 'pane'; db.append(el); p = PANES[key] = { el, k: '', title: '', icon: '', chart: null }; }
+  if (p.chart) delete CH[p.chart];
+  p.chart = pendingMark ? pendingMark[0] : null; pendingMark = null;
+  p.el.innerHTML = d.html; p.title = d.title; p.icon = d.icon; p.k = k;
+  // lay it out now (unpainted: the sheet is hidden, or this pane is), then let it sleep with its layout kept
+  p.el.classList.add('on'); void p.el.offsetHeight;
+  if (p !== activePane) p.el.classList.remove('on');
+  return p;
+}
+function prewarm(delay) {
+  clearTimeout(warmTimer);
+  warmTimer = setTimeout(() => { warmQ = SHEETS.slice(); whenIdle(warmStep); }, delay || 0);
+}
+function warmStep(dl) {
+  if (!DATA) return;
+  // never during a gesture or a transition: building is main-thread work
+  const busy = SC.mode !== 0 || CS.on || scrubbing || (EX.active && !EX.rest) || (pressW && pressW.press > 0.001);
+  if (busy) { clearTimeout(warmTimer); warmTimer = setTimeout(() => whenIdle(warmStep), 250); return; }
+  while (warmQ.length) {
+    const key = warmQ.shift(), p = PANES[key];
+    if (!(EX.active && p === activePane)) buildPane(key);        // the open sheet is left as it is
+    if (!dl || dl.didTimeout || dl.timeRemaining() < 10) break;  // one pane per idle slice at least
+  }
+  if (warmQ.length) whenIdle(warmStep);
+}
 let chartId = 0, pendingMark = null;
 const CH = {};                                          // scrubbable charts of the open sheet
 /* Chart scrubbing — drag along the chart: the lollipop rides the exact curve
@@ -958,7 +998,7 @@ function locate() {
     navigator.geolocation.getCurrentPosition(p => res(p.coords), rej, { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 });
   });
 }
-function renderAll() { renderHours(); renderDays(); renderHero(); measureWidgets(); }
+function renderAll() { renderHours(); renderDays(); renderHero(); measureWidgets(); prewarm(800); }
 function applyData(loc, data, fetchedAt, snap) {
   LOC = loc; DATA = data; FETCHED = fetchedAt; TZOFF = num(data.utc_offset_seconds); hemi = loc.lat < 0 ? -1 : 1;
   makeFormatters();
@@ -1086,7 +1126,7 @@ function onResize() {
   cssW = innerWidth; cssH = innerHeight;
   dpr = Math.min(devicePixelRatio || 1, CONFIG.quality.maxDpr);
   applyScale();
-  measureSafe(); layoutHours(); measureWidgets();
+  measureSafe(); layoutHours(); measureWidgets(); prewarm(600);
 }
 function boot() {
   // Reduce Transparency: solid panels instead of see-through glass (HIG)
