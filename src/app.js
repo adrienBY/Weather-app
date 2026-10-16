@@ -421,7 +421,7 @@ function initGL() {
     'uExposure', 'uNight', 'uDrift2', 'uCloud', 'uWx', 'uWind', 'uFlash', 'uBolt', 'uRip', 'uW', 'uBand', 'uEye']);
   program('down', 'full.vert', 'down.frag', ['uSrc', 'uDst', 'uTex']);
   program('up', 'full.vert', 'up.frag', ['uSrc', 'uDst', 'uTex']);
-  program('final', 'full.vert', 'final.frag', ['uSky', 'uBlur', 'uRes', 'uRect', 'uRectP', 'uPress', 'uLight', 'uTime', 'uDim']);
+  program('final', 'full.vert', 'final.frag', ['uSky', 'uBlur', 'uRes', 'uRect', 'uRectP', 'uPress', 'uLight', 'uTime', 'uDim', 'uBgBlur']);
 
   vaoEmpty = gl.createVertexArray();
   const corner = gl.createBuffer();
@@ -845,7 +845,7 @@ function render(dt) {
   bindTex(0, gl.TEXTURE_2D, skyT.t); bindTex(1, gl.TEXTURE_2D, BUP[2].t);
   gl.uniform1i(u.uSky, 0); gl.uniform1i(u.uBlur, 1);
   gl.uniform2f(u.uRes, cw, ch); gl.uniform4fv(u.uRect, RECT); gl.uniform4fv(u.uRectP, RECTP); gl.uniform4fv(u.uPress, PRESS);
-  gl.uniform2f(u.uLight, LIGHT_X, LIGHT_Y); gl.uniform1f(u.uTime, skyClock); gl.uniform1f(u.uDim, UI_DIM);
+  gl.uniform2f(u.uLight, LIGHT_X, LIGHT_Y); gl.uniform1f(u.uTime, skyClock); gl.uniform1f(u.uDim, UI_DIM); gl.uniform1f(u.uBgBlur, bgBlur());
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   if (tq) timerEnd();
 }
