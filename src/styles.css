@@ -62,7 +62,9 @@ svg{display:block}
 .dot{width:.5rem;height:.5rem;border-radius:50%;background:#ffbf6b}
 
 /* ── widgets: the glass itself is drawn by final.frag behind these boxes ── */
-.w{position:relative;border-radius:1.5rem;transform-origin:50% 50%}
+/* every widget lives on its own layer from the start: promoting or dropping a layer mid-animation
+   forces a re-raster, and that is what makes icons flicker */
+.w{position:relative;border-radius:1.5rem;transform-origin:50% 50%;will-change:transform,opacity}
 .card{margin-top:.75rem;padding:.95rem 1rem 1rem}
 .wh{display:flex;align-items:center;gap:.4rem;font-size:.8125rem;line-height:1.125rem;font-weight:600;letter-spacing:var(--t13);color:var(--ui3)}
 .wh svg{width:.95rem;height:.95rem}
@@ -162,6 +164,9 @@ footer a{color:var(--ui2);text-decoration:none}
 .li{display:grid;grid-template-columns:3.4rem 1.9rem minmax(0,1fr) auto;align-items:center;gap:.6rem;min-height:2.9rem;border-top:1px solid var(--hair);
   font-variant-numeric:tabular-nums}
 .li:first-child{border-top:0}
+/* rows below the fold are neither laid out nor painted until they scroll in: opening a sheet stays cheap */
+.li,.dayrow{content-visibility:auto;contain-intrinsic-size:auto 2.9rem}
+.dayrow{contain-intrinsic-size:auto 4.6rem}
 .li .ic{width:1.6rem;height:1.6rem}
 .li .a{font-weight:600}
 .li .m{display:flex;flex-direction:column;min-width:0;line-height:1.25}

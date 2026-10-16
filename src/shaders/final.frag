@@ -77,7 +77,7 @@ void main() {
   float isSheet = step(float(N) - 1.5, sel);
   vec3 col = base * (1.0 - uDim * 0.55) * (1.0 - shadow);
 
-  float m = RP.y, rad = RP.x;
+  float m = RP.y, rad = RP.x, k = RP.z;
   highp vec2 lp = px - R.xy;
   float inD = -sd;
   // rim normal from the SDF gradient (for the light-catching hairline)
@@ -88,7 +88,9 @@ void main() {
   vec3 g = mix(base, bspline(uBlur, uv), smoothstep(0.0, 0.6, m));
   float lum = dot(g, vec3(0.2126, 0.7152, 0.0722));
   g = clamp(mix(vec3(lum), g, 1.6), 0.0, 1.0);                       // vibrancy
-  float tint = 0.20 + 0.30 * smoothstep(0.22, 0.85, lum) + 0.16 * isSheet;
+  // an open sheet is a step denser; while it zooms the density follows its size (k), so the
+  // moment it lands back on the widget the two materials are identical — no pop on the swap
+  float tint = 0.20 + 0.30 * smoothstep(0.22, 0.85, lum) + 0.16 * isSheet * smoothstep(0.25, 1.0, k);
   g = mix(g, vec3(0.032, 0.040, 0.070), tint);                       // adaptive dark tint
   g += 0.022;                                                        // a breath of frost
   g *= 1.0 - uDim * 0.55 * (1.0 - isSheet);
