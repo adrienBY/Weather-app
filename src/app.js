@@ -16,8 +16,8 @@ const CONFIG = {
     downMs: 7.5,              // averaged GPU frame time above this → step resolution down
     upMs: 5.0,                // below this for upHoldMs → step up
     upHoldMs: 2000,
-    cloudRes: 0.42,           // volumetric cloud buffer, relative to the sky buffer
-    cloudSteps: 32,           // ray-march steps per ray (fewer = faster, grainier)
+    cloudRes: 0.6,            // volumetric cloud buffer, relative to the sky buffer
+    cloudSteps: 128,          // max ray-march iterations (adaptive strides; fewer = faster, may miss far clouds)
     idleAfterMs: 20000,       // no touch for this long → idle frame rate
     idleFps: 30,
   },
@@ -27,6 +27,8 @@ const CONFIG = {
     fov: 76,                  // vertical field of view, degrees
     exposure: 10,             // camera exposure for the physically based sky (higher = brighter)
     haze: 0.6,                // aerosol (Mie) density (lower = deeper blue); humidity and fog add to it
+    bankTop: 0.64,            // fair weather: the cloud bank stays below this screen height (under the temperature)
+    clearKm: 9,               // fair weather: clear sky overhead out to this distance, so the clouds stand far off
   },
   colors: {
     night: '#020409',         // night-sky floor (airglow, distant city glow) — '#000000' for pure AMOLED black
@@ -49,7 +51,6 @@ const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const lerp = (a, b, t) => a + (b - a) * t;
 const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const wrap1 = x => x - Math.floor(x);
-const wrap64 = x => x - Math.floor(x / 64) * 64;
 const num = v => (typeof v === 'number' && isFinite(v)) ? v : 0;
 const hexRGB = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; };
 const cap = x => x ? x.charAt(0).toUpperCase() + x.slice(1) : x;
@@ -286,8 +287,9 @@ function updateTargets() { sampleAt(scrubTarget, S); deriveTargets(S); T[I_SCRUB
 
 /* =============================================================================
    WebGL2 — passes per frame:
-     field → atmosphere LUTs (when the light moves) → clouds (¼ res) →
-     resolve (temporal) → drops → sky → blur ×4 → glass
+     field → atmosphere LUTs (when the light moves) → clouds (¼ of the band
+     buffer) → resolve (temporal) → drops → sky → material blur (5 down,
+     3 up) → widgets
    ============================================================================= */
 const canvas = $('sky');
 let gl = null, tq = null, gpuTimed = false;
@@ -296,7 +298,7 @@ let vaoEmpty, vaoDrop, dropBuf, texNoise, texDrop = null, texShape = null, texEr
 let transT, skySunT, skyMoonT, HDR = false, lutHaze = -1, transHaze = -1;
 const LUT_SUN = new Float32Array(3), LUT_MOON = new Float32Array(3);
 let fieldT = [], fieldIdx = 0, fieldEnergy = 0;
-let cFresh, cHist = [], histIdx = 0, glassT, skyT, bHalf, bA, bB, bC, BLUR = null, fillFrames = 3, cloudsOn = false, glassDirty = true;
+let cFresh, cHist = [], histIdx = 0, glassT, skyT, BDN = [], BUP = [], fillFrames = 3, cloudsOn = false, glassDirty = true;
 const RIP = new Float32Array(24), SPL = new Float32Array(16), WTS = new Float32Array(4), LDIR = new Float32Array(3), LGT = new Float32Array(3);
 const EQM = new Float32Array(9), GALM = new Float32Array(9), EQ_M = new Float32Array(3), EQ_W = new Float32Array(3), EQ_P = new Float32Array(3);
 const CAMF = new Float32Array(3), CAMU = new Float32Array(3), CAMR = new Float32Array(3), CTAN = new Float32Array(2);
@@ -321,7 +323,7 @@ function program(name, vs, fs, uniforms) {
   PR[name] = p; const u = UL[name] = {};
   uniforms.forEach(n => u[n] = gl.getUniformLocation(p, n));
 }
-// Tileable 256² Perlin, 4 independent channels (fog, moon mare, glass flow).
+// Tileable 256² Perlin, 4 independent channels (fog, moon mare).
 function bakeNoise(size, period) {
   const data = new Uint8Array(size * size * 4);
   const gx = new Float32Array(period * period), gy = new Float32Array(period * period);
@@ -408,16 +410,16 @@ function initGL() {
   program('field', 'full.vert', 'field.frag', ['uPrev', 'uSize', 'uSplat', 'uDecay', 'uAspect']);
   program('trans', 'full.vert', 'trans.frag', ['uSize', 'uHaze']);
   program('skyview', 'full.vert', 'skyview.frag', ['uTrans', 'uSize', 'uLightZ', 'uHaze']);
-  program('clouds', 'full.vert', 'clouds.frag', ['uShape', 'uErosion', 'uWeatherMap', 'uField', 'uTrans', 'uSkyS', 'uSkyM', 'uRes', 'uJit',
+  program('clouds', 'full.vert', 'clouds.frag', ['uShape', 'uErosion', 'uWeatherMap', 'uField', 'uTrans', 'uSkyS', 'uSkyM', 'uRes', 'uJit', 'uBand', 'uClear',
     'uCamF', 'uCamU', 'uCamR', 'uTan', 'uSunDir', 'uMoonDir', 'uLightDir', 'uLight', 'uWeather', 'uWindOff', 'uFrame', 'uFlash']);
-  program('resolve', 'full.vert', 'resolve.frag', ['uFresh', 'uHist', 'uFreshRes', 'uJit', 'uFill']);
+  program('resolve', 'full.vert', 'resolve.frag', ['uFresh', 'uHist', 'uFreshRes', 'uJit', 'uFill', 'uBlend']);
   program('drop', 'drop.vert', 'drop.frag', ['uAspect', 'uDrop']);
   program('sky', 'full.vert', 'sky.frag', ['uRes', 'uTime', 'uNoise', 'uField', 'uClouds', 'uGlass', 'uTrans', 'uSkyS', 'uSkyM', 'uMilky',
     'uCamF', 'uCamU', 'uCamR', 'uTan', 'uEqRot', 'uGalRot', 'uSunDir', 'uMoonDir', 'uMoonR', 'uMoonU', 'uSun', 'uMoon', 'uMoonL', 'uLight',
-    'uExposure', 'uNight', 'uDrift2', 'uPhase', 'uCloud', 'uWx', 'uWind', 'uFlash', 'uBolt', 'uRip', 'uW']);
+    'uExposure', 'uNight', 'uDrift2', 'uCloud', 'uWx', 'uWind', 'uFlash', 'uBolt', 'uRip', 'uW', 'uBand', 'uEye']);
   program('down', 'full.vert', 'down.frag', ['uSrc', 'uDst', 'uTex']);
   program('up', 'full.vert', 'up.frag', ['uSrc', 'uDst', 'uTex']);
-  program('final', 'full.vert', 'final.frag', ['uSky', 'uBlurA', 'uBlurB', 'uNoise', 'uRes', 'uRect', 'uRectP', 'uPress', 'uLight', 'uTime', 'uDim']);
+  program('final', 'full.vert', 'final.frag', ['uSky', 'uBlur', 'uRes', 'uRect', 'uRectP', 'uPress', 'uLight', 'uTime', 'uDim']);
 
   vaoEmpty = gl.createVertexArray();
   const corner = gl.createBuffer();
@@ -455,7 +457,8 @@ function initGL() {
   texBlack = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texBlack);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
   cFresh = rt(2, 2, hf[0], hf[1]); cHist = [rt(2, 2, hf[0], hf[1]), rt(2, 2, hf[0], hf[1])]; glassT = rt(2, 2); skyT = rt(2, 2);
-  bHalf = rt(2, 2); bA = rt(2, 2); bB = rt(2, 2); bC = rt(2, 2); BLUR = [bHalf, bA, bB];
+  // material blur chain: ½ … 1/32 down, back up to ¼ — half-float so a wide blur of a smooth sky never bands
+  BDN = [0, 1, 2, 3, 4].map(() => rt(2, 2, hf[0], hf[1])); BUP = [0, 1, 2].map(() => rt(2, 2, hf[0], hf[1]));
 
   loadAssets();
   const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
@@ -482,16 +485,20 @@ function applyScale() {
   cw = Math.max(8, Math.round(cssW * dpr * s)); ch = Math.max(8, Math.round(cssH * dpr * s));
   canvas.width = cw; canvas.height = ch;
   if (!gl) return;
-  const q = CONFIG.quality;
-  const hw = 2 * Math.max(2, Math.ceil(cw * q.cloudRes / 2)), hh = 2 * Math.max(2, Math.ceil(ch * (1 - HZ) * q.cloudRes / 2));
-  rtSize(cHist[0], hw, hh); rtSize(cHist[1], hw, hh); rtSize(cFresh, hw / 2, hh / 2);
+  sizeClouds();
   rtSize(glassT, Math.max(2, Math.round(cw / 2)), Math.max(2, Math.round(ch / 2)));
   rtSize(skyT, cw, ch);
-  rtSize(bHalf, Math.max(2, cw >> 1), Math.max(2, ch >> 1));
-  rtSize(bA, Math.max(2, cw >> 2), Math.max(2, ch >> 2));
-  rtSize(bB, Math.max(2, cw >> 3), Math.max(2, ch >> 3));
-  rtSize(bC, Math.max(2, cw >> 2), Math.max(2, ch >> 2));
+  BDN.forEach((r, k) => rtSize(r, Math.max(2, cw >> (k + 1)), Math.max(2, ch >> (k + 1))));
+  BUP.forEach((r, j) => rtSize(r, Math.max(2, cw >> (4 - j)), Math.max(2, ch >> (4 - j))));
   glassDirty = true; fillFrames = 3;
+}
+// the cloud buffer covers only the band of sky the clouds can occupy, at a uniform pixel density
+const BAND = new Float32Array([HZ, CONFIG.sky.bankTop]);
+function sizeClouds() {
+  const q = CONFIG.quality;
+  const hw = 2 * Math.max(2, Math.ceil(cw * q.cloudRes / 2)), hh = 2 * Math.max(2, Math.ceil(ch * (BAND[1] - BAND[0]) * q.cloudRes / 2));
+  rtSize(cHist[0], hw, hh); rtSize(cHist[1], hw, hh); rtSize(cFresh, hw / 2, hh / 2);
+  fillFrames = 3;
 }
 function governor(now, ms) {
   emaMs = emaMs ? emaMs + (ms - emaMs) * 0.08 : ms;
@@ -517,7 +524,7 @@ const DROP = new Float32Array(DN * 4), DJIT = new Float32Array(DN);
 let dropAcc = 0, dropsAlive = 0;
 function updateDrops(dt, aspect) {
   const rain = clamp(P[I_RAIN], 0, 1);
-  dropAcc += (rain > 0.04 ? Math.pow(rain, 1.3) * (calm ? 10 : 26) : 0) * dt;
+  dropAcc += (rain > 0.25 ? Math.pow(rain, 1.5) * (calm ? 3 : 8) : 0) * dt;   // a few on the lens; the rain itself is 3-D
   while (dropAcc >= 1) {
     dropAcc -= 1;
     let slot = 0, smallest = 1e9;
@@ -549,7 +556,7 @@ function updateDrops(dt, aspect) {
 let rafId = 0, lastT = 0, idleAcc = 0, lastInteract = performance.now(), idle = false, frames = 0;
 let calm = reduceMotion.matches;
 let skyClock = 0, wX = 0, wZ = 0, wEv = 0, wDet = 0, dHx = Math.random(), dHy = Math.random(), evX = 0, evY = 0;
-let phRN = 0, phRF = 0, phSN = 0, phSF = 0, tiltX = 0, tiltY = 0, tiltTX = 0, tiltTY = 0;
+let tiltX = 0, tiltY = 0, tiltTX = 0, tiltTY = 0;
 let flashT = -1, nextFlash = 3, flashX = 0, flashY = 0.6, boltOn = 0, boltX = 0, boltSeed = 0, flashI = 0;
 let sunVis = 0, sunE = 0, moonVis = 0, moonLx = 0, moonLz = 1;
 const NIGHT = hexRGB(CONFIG.colors.night).map(v => Math.pow(v, 2.2));
@@ -660,9 +667,6 @@ function update(dt) {
   wEv += sdt * 0.004; wDet += sdt * 0.006; if (wEv > 1e3) wEv = 0; if (wDet > 1e3) wDet = 0;
   dHx = wrap1(dHx - (0.010 + wx * 0.045) * 0.45 * sdt - 0.003 * sdt); dHy = wrap1(dHy - wy * 0.012 * sdt);
   evX = wrap1(evX + sdt * 0.0045); evY = wrap1(evY - sdt * 0.003);
-  const fall = 1 + wsp * 0.25;
-  phRN = wrap64(phRN + sdt * 3.4 * fall); phRF = wrap64(phRF + sdt * 5.2 * fall);
-  phSN = wrap64(phSN + sdt * 0.55); phSF = wrap64(phSF + sdt * 0.9);
 
   const tk = 1 - Math.exp(-dt * 6);
   tiltX += ((calm ? 0 : tiltTX) - tiltX) * tk; tiltY += ((calm ? 0 : tiltTY) - tiltY) * tk;
@@ -726,6 +730,12 @@ function render(dt) {
   // every layer of the forecast feeds the volumetric clouds (no flat cirrus layer any more):
   // combined cover = 1 − Π(1 − layer), mid and high layers weighted lower
   const cov = clamp(1 - (1 - clamp(P[I_CL], 0, 1)) * (1 - 0.7 * clamp(P[I_CM], 0, 1)) * (1 - 0.25 * clamp(P[I_CH], 0, 1)), 0, 1);
+  // stratiform only when it rains/snows or fogs: a cloudy dry sky stays a bank of 3-D cumulus
+  const strat = clamp(Math.max(P[I_RAIN], P[I_SNOW]) * 0.85 + sstep(0.9, 1, cov) * 0.2 + P[I_FOG] * 0.4, 0, 1);
+  // fair weather: a distant bank under the temperature; a deck (rain, snow, fog) fills the sky
+  const deck = sstep(0.25, 0.6, strat);
+  const top = deck > 0.5 ? 1 : (deck < 0.35 ? CONFIG.sky.bankTop : BAND[1]);
+  if (top !== BAND[1]) { BAND[1] = top; sizeClouds(); }
   if (cov > 0.008 && texShape) {
     cloudsOn = true;
     const j = (frameNo & 3) * 2, jx = JIT[j], jy = JIT[j + 1];
@@ -737,8 +747,8 @@ function render(dt) {
     gl.uniform2f(u.uRes, cFresh.w, cFresh.h); gl.uniform2f(u.uJit, jx, jy);
     gl.uniform3fv(u.uCamF, CAMF); gl.uniform3fv(u.uCamU, CAMU); gl.uniform3fv(u.uCamR, CAMR); gl.uniform2fv(u.uTan, CTAN);
     gl.uniform3fv(u.uSunDir, SUND); gl.uniform3fv(u.uMoonDir, MOOND); gl.uniform3fv(u.uLightDir, LDIR); gl.uniform3fv(u.uLight, LGT);
-    // stratiform only when it rains/snows or fogs: a cloudy dry sky stays a sky full of 3-D cumulus
-    const strat = clamp(Math.max(P[I_RAIN], P[I_SNOW]) * 0.85 + sstep(0.9, 1, cov) * 0.2 + P[I_FOG] * 0.4, 0, 1);
+    const clear = CONFIG.sky.clearKm * (1 - 0.18 * cov) * (1 - deck);
+    gl.uniform2f(u.uBand, BAND[0], BAND[1]); gl.uniform2f(u.uClear, clear, Math.max(0.5, clear * 0.3));
     gl.uniform4f(u.uWeather, cov, strat, 0.85 + 0.7 * clamp(P[I_DARK], 0, 1), clamp(P[I_DARK], 0, 1));
     gl.uniform4f(u.uWindOff, wX, wZ, wEv, wDet);
     gl.uniform1f(u.uFrame, frameNo & 1023);
@@ -749,6 +759,8 @@ function render(dt) {
     bindTex(0, gl.TEXTURE_2D, cFresh.t); bindTex(1, gl.TEXTURE_2D, cHist[histIdx].t);
     gl.uniform1i(u.uFresh, 0); gl.uniform1i(u.uHist, 1);
     gl.uniform2f(u.uFreshRes, cFresh.w, cFresh.h); gl.uniform2f(u.uJit, jx, jy); gl.uniform1f(u.uFill, fillFrames > 0 ? 1 : 0);
+    // ~20 samples per pixel when the sky is steady; quick to follow while scrubbing or when the weather moves
+    gl.uniform1f(u.uBlend, scrubbing || Math.abs(P[I_SCRUB] - T[I_SCRUB]) > 0.05 ? 0.4 : 0.11);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     histIdx = 1 - histIdx; if (fillFrames > 0) fillFrames--;
   } else if (cloudsOn) {
@@ -783,29 +795,34 @@ function render(dt) {
   gl.uniform3fv(u.uLight, LGT); gl.uniform1f(u.uExposure, CONFIG.sky.exposure); gl.uniform3f(u.uNight, NIGHT[0], NIGHT[1], NIGHT[2]);
   gl.uniform3fv(u.uSunDir, SUND); gl.uniform3fv(u.uMoonDir, MOOND); gl.uniform3fv(u.uMoonR, MOONR); gl.uniform3fv(u.uMoonU, MOONU);
   gl.uniform4f(u.uSun, sunVis, sunE, 0, 0); gl.uniform4f(u.uMoon, moonVis, A.moonFrac, 0, 0); gl.uniform3f(u.uMoonL, moonLx, 0, moonLz);
-  gl.uniform4f(u.uDrift2, dHx, dHy, evX, evY); gl.uniform4f(u.uPhase, phRN, phRF, phSN, phSF);
+  gl.uniform4f(u.uDrift2, dHx, dHy, evX, evY); gl.uniform2f(u.uBand, BAND[0], BAND[1]);
+  gl.uniform3f(u.uEye, (calm ? 0 : tiltX) * 0.12, (calm ? 0 : -tiltY) * 0.07, camYaw + (calm ? 0 : tiltX) * 0.035);
   gl.uniform4f(u.uCloud, clamp(P[I_CL], 0, 1), clamp(P[I_CM], 0, 1), clamp(P[I_CH], 0, 1), clamp(P[I_DARK], 0, 1));
   gl.uniform4f(u.uWx, clamp(P[I_RAIN], 0, 1), clamp(P[I_SNOW], 0, 1), clamp(P[I_FOG], 0, 1), clamp(P[I_STORM], 0, 1));
   gl.uniform4f(u.uWind, clamp(P[I_WX] * 0.4, -0.55, 0.55), clamp(P[I_WX] * 0.15, -0.3, 0.3), P[I_WS], 0);
   gl.uniform4f(u.uFlash, flashX, flashY, flashI, boltOn); gl.uniform2f(u.uBolt, boltX, boltSeed);
   gl.uniform4fv(u.uRip, RIP); gl.uniform4fv(u.uW, WTS);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
-  // 6. dual-Kawase blur chain for the glass: ½ → ¼ → ⅛ → ¼
+  // 6. the material's blur: dual-Kawase ½ → 1/32 and back up to ¼ (a ~30 pt radius)
   gl.useProgram(PR.down); u = UL.down; gl.uniform1i(u.uSrc, 0);
   let srcT = skyT;
-  for (let k = 0; k < 3; k++) {
-    const dst = BLUR[k];                               // preallocated chain: no per-frame arrays
+  for (let k = 0; k < 5; k++) {
+    const dst = BDN[k];                                // preallocated chain: no per-frame arrays
     toRT(dst); bindTex(0, gl.TEXTURE_2D, srcT.t);
     gl.uniform2f(u.uDst, dst.w, dst.h); gl.uniform2f(u.uTex, 1 / srcT.w, 1 / srcT.h);
     gl.drawArrays(gl.TRIANGLES, 0, 3); srcT = dst;
   }
   gl.useProgram(PR.up); u = UL.up; gl.uniform1i(u.uSrc, 0);
-  toRT(bC); bindTex(0, gl.TEXTURE_2D, bB.t); gl.uniform2f(u.uDst, bC.w, bC.h); gl.uniform2f(u.uTex, 1 / bB.w, 1 / bB.h);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-  // 7. glass widgets → screen
+  for (let k = 0; k < 3; k++) {
+    const dst = BUP[k];
+    toRT(dst); bindTex(0, gl.TEXTURE_2D, srcT.t);
+    gl.uniform2f(u.uDst, dst.w, dst.h); gl.uniform2f(u.uTex, 1 / srcT.w, 1 / srcT.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3); srcT = dst;
+  }
+  // 7. widget material → screen
   toRT(null); gl.useProgram(PR.final); u = UL.final;
-  bindTex(0, gl.TEXTURE_2D, skyT.t); bindTex(1, gl.TEXTURE_2D, bA.t); bindTex(2, gl.TEXTURE_2D, bC.t); bindTex(3, gl.TEXTURE_2D, texNoise);
-  gl.uniform1i(u.uSky, 0); gl.uniform1i(u.uBlurA, 1); gl.uniform1i(u.uBlurB, 2); gl.uniform1i(u.uNoise, 3);
+  bindTex(0, gl.TEXTURE_2D, skyT.t); bindTex(1, gl.TEXTURE_2D, BUP[2].t);
+  gl.uniform1i(u.uSky, 0); gl.uniform1i(u.uBlur, 1);
   gl.uniform2f(u.uRes, cw, ch); gl.uniform4fv(u.uRect, RECT); gl.uniform4fv(u.uRectP, RECTP); gl.uniform4fv(u.uPress, PRESS);
   gl.uniform2f(u.uLight, LIGHT_X, LIGHT_Y); gl.uniform1f(u.uTime, skyClock); gl.uniform1f(u.uDim, UI_DIM);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
