@@ -227,8 +227,8 @@ function gpuRender(dt) {
   // 3. volumetric clouds + temporal resolve (same weather → cloud mapping as render())
   const cov = clamp(1 - (1 - clamp(P[I_CL], 0, 1)) * (1 - 0.7 * clamp(P[I_CM], 0, 1)) * (1 - 0.25 * clamp(P[I_CH], 0, 1)), 0, 1);
   const strat = clamp(Math.max(P[I_RAIN], P[I_SNOW]) * 0.85 + sstep(0.9, 1, cov) * 0.2 + P[I_FOG] * 0.4, 0, 1);
-  const deck = sstep(0.25, 0.6, strat);
-  const top = deck > 0.5 ? 1 : (deck < 0.35 ? CONFIG.sky.bankTop : BAND[1]);
+  const deck = sstep(0.25, 0.6, strat), conv = convection(cov);
+  const top = skyBandTop(deck, conv);
   if (top !== BAND[1]) { BAND[1] = top; sizeClouds(); }
   const skipSky = halfRate && (frameNo & 1) && cloudsOn && !scrubbing && !CS.on;
   const freeze = (EX.active && EX.prog > 0.35 && !scrubbing && !CS.on && cloudsOn) || skipSky;
@@ -240,7 +240,7 @@ function gpuRender(dt) {
     v4(f, 0, R.fresh.w, R.fresh.h, jx, jy); v4(f, 4, BAND[0], BAND[1], clear, Math.max(0.5, clear * 0.3));
     v3(f, 8, CAMF); f[11] = frameNo & 1023; v3(f, 12, CAMU); v3(f, 16, CAMR); v4(f, 20, CTAN[0], CTAN[1], 0, 0);
     v3(f, 24, SUND); v3(f, 28, MOOND); v3(f, 32, LDIR); v3(f, 36, LGT);
-    v4(f, 40, cov, strat, 0.85 + 0.7 * dk, dk); v4(f, 44, wX, wZ, wEv, wDet); f.set(FLD, 48);
+    v4(f, 40, cov, strat, 0.85 + 0.7 * dk, conv); v4(f, 44, wX, wZ, wEv, wDet); f.set(FLD, 48);
     gpass(enc, R.fresh.v, P_.clouds, gbg('clouds' + fieldIdx, P_.clouds, [gub(g.u.clouds), gpuView(g.tex.shape), gpuView(g.tex.erosion), gpuView(g.tex.weather),
       R.field[fieldIdx].v, R.trans.v, R.skyS.v, R.skyM.v, g.sRep, g.sClamp]));
     const r = g.u.resolve.f;
