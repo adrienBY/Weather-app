@@ -170,7 +170,7 @@ function scrollUpdate(dt) {
    when it changes (never per frame); per frame we only offset by the scroll.
    ============================================================================= */
 const WG = [];
-let LIGHT_X = -0.45, LIGHT_Y = 0.89, UI_DIM = 0, PUSH = 1;
+let LIGHT_X = -0.45, LIGHT_Y = 0.89, UI_DIM = 0, PUSH = 1, PAGE_OP = 1;
 const SHEET_SLOT = 9;
 function registerWidgets() {
   WG.length = 0;
@@ -255,8 +255,8 @@ function uiUpdate(dt) {
   if (bv !== lastBar) { bar.style.setProperty('--bar', bv); lastBar = bv; }
   const s = PUSH, cx = cssW / 2, cy = cssH / 2;
   const ct = 'translate3d(' + ((1 - s) * cx).toFixed(2) + 'px,' + (-s * y + (1 - s) * cy).toFixed(2) + 'px,0) scale(' + s.toFixed(4) + ')';
-  const fadeN = 1 - UI_DIM;                               // page text, top bar and the flying copies dissolve across the whole zoom (UI_DIM is already eased)
-  const ck = ct + UI_DIM.toFixed(3);
+  const fadeN = PAGE_OP;                                  // page text, top bar and the flying copies: gone by the time the sheet covers them (see expandUpdate)
+  const ck = ct + PAGE_OP.toFixed(3);
   if (ck !== lastCT) {
     // The glass is composed in WebGL *under* the DOM, so it cannot blur page
     // text. Instead the page recedes (scale + fade) as the sheet grows over it.
@@ -518,6 +518,11 @@ function expandUpdate(dt) {
   else { const st = dt / (EX.open ? Q_OPEN : Q_CLOSE); EX.q = EX.open ? Math.min(1, EX.q + st) : Math.max(0, EX.q - st); }
   const q = EX.q;
   PUSH = 1 - (calm ? 0 : 0.06 * p); UI_DIM = sstep(0, 1, q);
+  // The glass is composed under the DOM, so the page's text cannot be blurred behind the sheet — it has
+  // to be gone by the time the sheet covers it, or it reads through the moving panel (text on text).
+  // The spring covers most of its distance early, a pure time ramp lags behind it: take whichever is
+  // further along. On the way back the same rule makes the text return only once the panel has shrunk.
+  PAGE_OP = 1 - Math.max(sstep(0, 0.5, q), calm ? 0 : sstep(0, 0.5, clamp(p, 0, 1)));
   const fo = EX.fade.toFixed(3);
   if (fo !== EX.lastF) { dp.style.opacity = fo === '1.000' ? '' : fo; EX.lastF = fo; }
   // transform-only zoom (compositor, no repaint): the clip box scales non-uniformly
@@ -531,8 +536,11 @@ function expandUpdate(dt) {
     dp.style.borderRadius = (s[4] / sx).toFixed(1) + 'px/' + (s[4] / sy).toFixed(1) + 'px';
     // the sheet's own content fades in as it grows; what it shares with the widget (title,
     // main value) does not fade in from nowhere: it flies from the widget (sheetPairsUpdate)
-    const sh = sstep(0.15, 0.85, q);                      // what both share cross-dissolves at the midpoint
-    const co = sstep(0.25, 1, q).toFixed(3), bo = sh.toFixed(3);
+    // Fade-through (Material's container transform): the widget's own content leaves first (it is
+    // being blown up with the glass, so it must be gone by ~1.3×), the sheet's arrives after, with
+    // no overlap — two layouts are never on screen at once. Reduced motion keeps a plain cross-fade.
+    const sh = sstep(0.15, calm ? 0.85 : 0.6, q);         // what both share cross-dissolves while it flies
+    const co = (calm ? sstep(0.25, 1, q) : sstep(0.28, 0.72, q)).toFixed(3), bo = sh.toFixed(3);
     for (const c of dh.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
     if (activePane) for (const c of activePane.el.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
     sheetPairsUpdate(p);
@@ -542,10 +550,11 @@ function expandUpdate(dt) {
     const w = EX.w, ps = PUSH, ccx = cssW / 2, ccy = cssH / 2;
     const bx = (1 - ps) * ccx + ps * w.x, by = (1 - ps) * ccy + ps * (w.y - SC.y + (w.inHero ? heroShift : 0)), bw = ps * w.w;
     w.el.style.transform = 'translate3d(' + ((s[0] - bx) / ps).toFixed(2) + 'px,' + ((s[1] - by) / ps).toFixed(2) + 'px,0) scale(' + (s[2] / bw).toFixed(5) + ')';
-    if (calm || !SMP.length) w.el.style.opacity = (1 - sstep(0, 0.7, q)).toFixed(3);
-    else {                                                // the widget's other content thins out early, its title and value stay to cross-dissolve with the sheet's
+    const wOut = calm ? sstep(0, 0.7, q) : sstep(0, 0.26, q);
+    if (calm || !SMP.length) w.el.style.opacity = (1 - wOut).toFixed(3);
+    else {                                                // the widget's other content leaves first, its title and value stay to cross-dissolve with the sheet's
       w.el.style.opacity = '';
-      const wo = (1 - sstep(0, 0.7, q)).toFixed(3), wso = (1 - sh).toFixed(3);
+      const wo = (1 - wOut).toFixed(3), wso = (1 - sh).toFixed(3);
       for (const c of w.el.children) c.style.opacity = SMP.some(x => x.a && (c === x.a || c.contains(x.a))) ? wso : wo;
     }
     EX.lastT = key;
@@ -563,7 +572,7 @@ function expandUpdate(dt) {
       w.el.style.opacity = '1'; for (const c of w.el.children) c.style.opacity = ''; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
       for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
       SMP.length = 0;
-      EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
+      EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
       CS.c = null;                         // the sheet stays built (and laid out) for next time
     }
   }
