@@ -766,7 +766,10 @@ function render(dt) {
   // dimmed through a heavy blur: keep the last traced clouds and give the frame budget
   // to the transition. Live again as soon as the sky has to follow a scrub, and from
   // the last third of the way back, so the history has converged when the sheet lands
-  const skipSky = halfRate && (frameNo & 1) && cloudsOn && !scrubbing && !CS.on;
+  // while a sheet zooms or is dragged, the sky is exactly what it was when the finger landed: nothing behind
+  // the transition is re-traced (clouds, sky, blur chain all kept), the whole frame goes to the zoom
+  const hold = EX.active && !EX.rest && !scrubbing && !CS.on;
+  const skipSky = hold || (halfRate && (frameNo & 1) && cloudsOn && !scrubbing && !CS.on);
   const freeze = (EX.active && EX.prog > 0.35 && !scrubbing && !CS.on && cloudsOn) || skipSky;
   if (freeze) { /* history kept as it is */ }
   else if (cov > 0.008 && texShape) {
@@ -886,4 +889,3 @@ function stop() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; }
 function markInteraction() { lastInteract = performance.now(); }
 
 //@@GPU@@
-//@@UI@@
