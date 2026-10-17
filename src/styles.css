@@ -163,19 +163,17 @@ footer a{color:var(--ui2);text-decoration:none}
 #dTitle{font-size:1.75rem;line-height:2.125rem;font-weight:700;letter-spacing:var(--t28)}
 #dClose{position:absolute;right:1rem;top:1.15rem;width:2.25rem;height:2.25rem;border-radius:50%;background:rgba(255,255,255,.14);display:grid;place-items:center}
 #dClose svg{width:1rem;height:1rem}
-#db{position:relative;flex:1;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;scrollbar-width:none;
-  -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 .75rem);mask-image:linear-gradient(180deg,transparent 0,#000 .75rem)}
+#db{position:relative;flex:1;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;scrollbar-width:none}
+#db.sc{-webkit-mask-image:linear-gradient(180deg,transparent 0,#000 .75rem);mask-image:linear-gradient(180deg,transparent 0,#000 .75rem)}
 #db::-webkit-scrollbar{display:none}
 /* every sheet stays built in memory as a pane: asleep (layout kept, nothing painted or hit-tested)
    until its widget is opened */
 .pane{position:absolute;left:0;right:0;top:0;padding:0 1.25rem calc(var(--sab) + 1.5rem);content-visibility:hidden;pointer-events:none}
 .pane.on{content-visibility:visible;pointer-events:auto}
-/* the sheet's fades are two flat layers, not one per element: #dpv is the panel's dark veil (under the content),
-   #dpc covers the content and thins out as it arrives — opacity-only, so the zoom repaints nothing and the
-   compositor carries a handful of layers instead of a dozen clipped render surfaces */
-#dpv,#dpc{position:absolute;inset:0;background:rgb(10,16,34);opacity:0;pointer-events:none;will-change:opacity}
+/* the panel's veil: one flat layer under the content, opacity-only (the content fades on its own layer, #dpi) */
+#dpv{position:absolute;inset:0;background:rgb(10,16,34);opacity:0;pointer-events:none;will-change:opacity}
 .noglass #dpv{display:none}
-.noglass #dpc{background:#121522}
+.noglass #dp{background:#121522}
 .big{display:flex;align-items:baseline;gap:.6rem;margin:.25rem 0 .2rem;transform-origin:0 0}
 .big b{font-size:3.25rem;line-height:1;font-weight:300;letter-spacing:-.03em;font-variation-settings:"opsz" 32;font-variant-numeric:tabular-nums}
 .big span{font-size:1.25rem;font-weight:500;letter-spacing:var(--t20);color:var(--ui2)}

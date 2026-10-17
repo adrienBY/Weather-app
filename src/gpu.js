@@ -228,7 +228,10 @@ function gpuRender(dt) {
   const deck = sstep(0.25, 0.6, strat), conv = convection(cov);
   const top = skyBandTop(deck, conv);
   if (top !== BAND[1]) { BAND[1] = top; sizeClouds(); }
-  const skipSky = halfRate && (frameNo & 1) && cloudsOn && !scrubbing && !CS.on;
+  // while a sheet zooms or is dragged, the sky is exactly what it was when the finger landed: nothing behind
+  // the transition is re-traced (clouds, sky, blur chain all kept), the whole frame goes to the zoom
+  const hold = EX.active && !EX.rest && !scrubbing && !CS.on;
+  const skipSky = hold || (halfRate && (frameNo & 1) && cloudsOn && !scrubbing && !CS.on);
   const freeze = (EX.active && EX.prog > 0.35 && !scrubbing && !CS.on && cloudsOn) || skipSky;
   if (freeze) { /* history kept as it is */ }
   else if (cov > 0.008 && g.tex.shape) {
