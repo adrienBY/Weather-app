@@ -28,7 +28,6 @@ async function initGPU() {
   const TU = GPUTextureUsage, BU = GPUBufferUsage;
   g.sClamp = dev.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
   g.sRep = dev.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat' });
-  g.sMilky = dev.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'clamp-to-edge' });
 
   // pipelines — compiled together and checked before the canvas is committed to WebGPU
   const HF = 'rgba16float', U8 = 'rgba8unorm';
@@ -94,7 +93,7 @@ async function initGPU() {
   g.drops = dev.createBuffer({ size: DROP.byteLength, usage: BU.VERTEX | BU.COPY_DST });
   const ub = n => ({ f: new Float32Array(n), b: dev.createBuffer({ size: n * 4, usage: BU.UNIFORM | BU.COPY_DST }) });
   g.u.field = ub(20); g.u.trans = ub(4); g.u.skyS = ub(4); g.u.skyM = ub(4); g.u.clouds = ub(52); g.u.resolve = ub(8);
-  g.u.drop = ub(4); g.u.sky = ub(140); g.u.down = [0, 1, 2, 3, 4].map(() => ub(4)); g.u.up = [0, 1, 2].map(() => ub(4)); g.u.final = ub(92);
+  g.u.drop = ub(4); g.u.sky = ub(128); g.u.down = [0, 1, 2, 3, 4].map(() => ub(4)); g.u.up = [0, 1, 2].map(() => ub(4)); g.u.final = ub(92);
 
   // any error while drawing (a driver that compiles but misbehaves): drop WebGPU, carry on in WebGL2
   dev.addEventListener('uncapturederror', e => {
@@ -150,11 +149,10 @@ function gpuVolume(dev, img, N) {
   }
   return t;
 }
-function gpuAssets(shape, erosion, weather, milky) {
+function gpuAssets(shape, erosion, weather) {
   const g = gpu, dev = g.dev;
   g.tex.shape = gpuVolume(dev, shape, 64); g.tex.erosion = gpuVolume(dev, erosion, 32);
   g.tex.weather = gpuTex2D(dev, weather.width, weather.height, pixels(weather), true);
-  g.tex.milky = gpuTex2D(dev, milky.width, milky.height, pixels(milky), false);
   g.gen++; fillFrames = 3;
 }
 
@@ -272,19 +270,19 @@ function gpuRender(dt) {
     const f = g.u.sky.f;
     v4(f, 0, cw, ch, skyClock); v4(f, 4, BAND[0], BAND[1]);
     v3(f, 8, CAMF); v3(f, 12, CAMU); v3(f, 16, CAMR); v4(f, 20, CTAN[0], CTAN[1]);
-    for (let c = 0; c < 3; c++) { v3(f, 24 + c * 4, EQM.subarray(c * 3, c * 3 + 3)); v3(f, 36 + c * 4, GALM.subarray(c * 3, c * 3 + 3)); }
-    v3(f, 48, SUND); v3(f, 52, MOOND); v3(f, 56, MOONR); v3(f, 60, MOONU);
-    v4(f, 64, sunVis, sunE); v4(f, 68, moonVis, A.moonFrac); v4(f, 72, moonLx, 0, moonLz);
-    v4(f, 76, LGT[0], LGT[1], LGT[2], CONFIG.sky.exposure); v4(f, 80, NIGHT[0], NIGHT[1], NIGHT[2]);
-    v4(f, 84, dHx, dHy, evX, evY);
-    v4(f, 88, clamp(P[I_CL], 0, 1), clamp(P[I_CM], 0, 1), clamp(P[I_CH], 0, 1), clamp(P[I_DARK], 0, 1));
-    v4(f, 92, clamp(P[I_RAIN], 0, 1), clamp(P[I_SNOW], 0, 1), clamp(P[I_FOG], 0, 1), clamp(P[I_STORM], 0, 1));
-    v4(f, 96, clamp(P[I_WX] * 0.4, -0.55, 0.55), clamp(P[I_WX] * 0.15, -0.3, 0.3), P[I_WS], 0);
-    v4(f, 100, flashX, flashY, flashI, boltOn); v4(f, 104, boltX, boltSeed);
-    f.set(RIP, 108); f.set(WTS, 132);
-    v4(f, 136, (calm ? 0 : tiltX) * 0.12, (calm ? 0 : -tiltY) * 0.07, camYaw + (calm ? 0 : tiltX) * 0.035);
+    for (let c = 0; c < 3; c++) v3(f, 24 + c * 4, EQM.subarray(c * 3, c * 3 + 3));
+    v3(f, 36, SUND); v3(f, 40, MOOND); v3(f, 44, MOONR); v3(f, 48, MOONU);
+    v4(f, 52, sunVis, sunE); v4(f, 56, moonVis, A.moonFrac); v4(f, 60, moonLx, 0, moonLz);
+    v4(f, 64, LGT[0], LGT[1], LGT[2], CONFIG.sky.exposure); v4(f, 68, NIGHT[0], NIGHT[1], NIGHT[2]);
+    v4(f, 72, dHx, dHy, evX, evY);
+    v4(f, 76, clamp(P[I_CL], 0, 1), clamp(P[I_CM], 0, 1), clamp(P[I_CH], 0, 1), clamp(P[I_DARK], 0, 1));
+    v4(f, 80, clamp(P[I_RAIN], 0, 1), clamp(P[I_SNOW], 0, 1), clamp(P[I_FOG], 0, 1), clamp(P[I_STORM], 0, 1));
+    v4(f, 84, clamp(P[I_WX] * 0.4, -0.55, 0.55), clamp(P[I_WX] * 0.15, -0.3, 0.3), P[I_WS], 0);
+    v4(f, 88, flashX, flashY, flashI, boltOn); v4(f, 92, boltX, boltSeed);
+    f.set(RIP, 96); f.set(WTS, 120);
+    v4(f, 124, (calm ? 0 : tiltX) * 0.12, (calm ? 0 : -tiltY) * 0.07, camYaw + (calm ? 0 : tiltX) * 0.035);
     gpass(enc, R.sky.v, P_.sky, gbg('sky' + fieldIdx + histIdx, P_.sky, [gub(g.u.sky), gpuView(g.tex.noise), R.field[fieldIdx].v, R.hist[histIdx].v, R.glass.v,
-      R.trans.v, R.skyS.v, R.skyM.v, gpuView(g.tex.milky || g.tex.black), g.sClamp, g.sRep, g.sMilky]));
+      R.trans.v, R.skyS.v, R.skyM.v, g.sClamp, g.sRep]));
     let srcT = R.sky;
     for (let k = 0; k < 5; k++) {
       const dst = R.bdn[k], u = g.u.down[k];
