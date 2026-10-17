@@ -82,7 +82,7 @@ void main() {
     float d = sdRBox(px - r.xy, r.zw, rp.x);
     float on = step(d, 0.75) * step(0.002, rp.y);
     float ds = sdRBox(px - r.xy + vec2(0.0, 6.0 + 14.0 * rp.z), r.zw, rp.x);
-    shadow = max(shadow, (1.0 - smoothstep(-10.0, 34.0 + 46.0 * rp.z, ds)) * rp.y * (0.10 + 0.16 * rp.z));
+    shadow = max(shadow, (1.0 - smoothstep(-10.0, 34.0 + 46.0 * rp.z, ds)) * rp.y * (0.10 + 0.16 * rp.z) * step(float(i) + 1.5, float(N)));   // the sheet slot casts none: the scene behind stays as it is
     R = mix(R, r, on); RP = mix(RP, rp, on); sd = mix(sd, d, on); sel = mix(sel, float(i), on);
   }
   float isSheet = step(float(N) - 1.5, sel);
