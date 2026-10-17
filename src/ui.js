@@ -282,7 +282,7 @@ function uiUpdate(dt) {
     RECTP[o] = w.r * ps * s * kx; RECTP[o + 1] = m; RECTP[o + 2] = w.thick; RECTP[o + 3] = w.seed;
   }
   {
-    const o = SHEET_SLOT * 4, e = EX.s;
+    const o = SHEET_SLOT * 4, e = EX.d;
     if (EX.active) {
       RECT[o] = (e[0] + e[2] / 2) * kx; RECT[o + 1] = ch - (e[1] + e[3] / 2) * ky; RECT[o + 2] = e[2] / 2 * kx; RECT[o + 3] = e[3] / 2 * ky;
       RECTP[o] = e[4] * kx; RECTP[o + 1] = EX.fade; RECTP[o + 2] = lerp(EX.w ? EX.w.thick : 0.2, 1, clamp(EX.prog, 0, 1)); RECTP[o + 3] = 0.77;
@@ -398,11 +398,11 @@ function morphUpdate(dt, y, s, fade) {
 }
 // widget ↔ sheet: pairs of (element in the widget, element in the sheet), measured in each
 // one's own layout (both containers are uniform zooms anchored at the moving rectangle)
-const SMP = [];
+const SMP = [], SHARED_MORPH = false;
 function sheetPairs(w) {
   for (const q of SMP) q.b.style.transform = '';
   SMP.length = 0;
-  if (calm || !activePane || !w) return;
+  if (calm || !activePane || !w || !SHARED_MORPH) return;   // the reference zoom is a plain fade-through, nothing flies between the two layouts
   const fz = el => parseFloat(getComputedStyle(el).fontSize) || 16;
   const pair = (qa, fa, b, fb, bx, by) => {
     const a = w.el.querySelector(qa); if (!a || !b) return;
@@ -439,7 +439,7 @@ function sheetPairsUpdate(p) {
    it dismisses with velocity hand-off (Apple's projection decides).
    ============================================================================= */
 const EX = { active: false, open: false, w: null, s: new Float32Array(5), v: new Float32Array(5), t: new Float32Array(5),
-  src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, q: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '', cm: 0,
+  src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, q: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '', cm: 0, dw: 0, d: new Float32Array(5),
   ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0, rest: false };
 // sheet springs (response s, damping ratio): open and close are critically damped
 // or nearly so — the zoom lands without wobble; a throw back up keeps a little life
@@ -449,7 +449,7 @@ const SP_OPEN = [0.40, 0.9], SP_CLOSE = [0.36, 0.96], SP_BACK = [0.32, 0.82];
 // its first instants, so a fade windowed on that progress is over in a few frames — a cut.
 // EX.q ramps steadily (and turns around mid-way without a jump); while dragging it follows the finger.
 const Q_OPEN = 0.48, Q_CLOSE = 0.40;
-const TINT = 0.82;                                    // opacity of the dark veil on the sheet panel over the page text
+const TINT = 0.94;                                    // the sheet panel is solid while it grows, and settles at this opacity once open
 const detail = $('detail'), dp = $('dp'), dpi = $('dpi'), dh = $('dh'), db = $('db');
 let safeT = 0, safeB = 0, safeL = 0, safeR = 0;
 function measureSafe() {
@@ -481,7 +481,7 @@ function openDetail(w) {
   dst[0] = 8 + safeL; dst[1] = safeT + 8; dst[2] = cssW - 16 - safeL - safeR; dst[3] = cssH - dst[1] - 8; dst[4] = 34;
   dp.style.left = dst[0] + 'px'; dp.style.top = dst[1] + 'px'; dp.style.width = dst[2] + 'px'; dp.style.height = dst[3] + 'px';
   widgetScreenRect(w, EX.src);
-  if (!EX.active) { EX.s.set(calm ? dst : EX.src); EX.v.fill(0); EX.fade = calm ? 0 : 1; EX.cm = 0; }
+  if (!EX.active) { EX.s.set(calm ? dst : EX.src); EX.v.fill(0); EX.fade = calm ? 0 : 1; EX.cm = 0; EX.dw = 0; }
   EX.t.set(dst); EX.w = w; EX.open = true; EX.active = true; EX.resp = SP_OPEN[0]; EX.zeta = SP_OPEN[1];
   EX.lastT = ''; EX.fresh = 2;           // if the sheet had to be built now, that frame is long: don't let the springs jump over it
   EX.w.el.style.transformOrigin = '0 0';
@@ -519,36 +519,44 @@ function expandUpdate(dt) {
   else if (EX.drag) EX.q += (p - EX.q) * (1 - Math.exp(-dt * 30));
   else { const st = dt / (EX.open ? Q_OPEN : Q_CLOSE); EX.q = EX.open ? Math.min(1, EX.q + st) : Math.max(0, EX.q - st); }
   const q = EX.q;
-  PUSH = 1 - (calm ? 0 : 0.06 * p); UI_DIM = sstep(0, 1, q);
-  // The page behind is always there: its text never fades in or out (a fade of the text was what read as
-  // late and abrupt on the way back). The glass is composed under the DOM, so the text cannot be blurred
-  // behind the sheet; instead the sheet panel carries a translucent tint (below) that quiets it.
-  // cm eases between the opening and closing windows of the sheet's own fades, so a drag-release has no jump.
-  EX.cm += ((EX.open ? 0 : 1) - EX.cm) * (1 - Math.exp(-dt * 14));
-  const cm = calm ? 0 : EX.cm;
+  PUSH = 1 - (calm ? 0 : 0.06 * p); UI_DIM = 0;   // the page recedes a little; the scene behind never dims, blurs or gets a shadow
+  // The page behind is always there: its text never fades in or out, the scene never changes. The sheet
+  // is an opaque panel that grows out of the widget and covers whatever is under it.
   PAGE_OP = 1;
   const fo = EX.fade.toFixed(3);
   if (fo !== EX.lastF) { dp.style.opacity = fo === '1.000' ? '' : fo; EX.lastF = fo; }
   // transform-only zoom (compositor, no repaint): the clip box scales non-uniformly
   // to the moving rectangle, the content inside counter-scales to a uniform zoom
-  const sx = Math.max(0.02, s[2] / dst[2]), sy = Math.max(0.02, s[3] / dst[3]);
-  const tf = 'translate3d(' + (s[0] - dst[0]).toFixed(2) + 'px,' + (s[1] - dst[1]).toFixed(2) + 'px,0) scale(' + sx.toFixed(5) + ',' + sy.toFixed(5) + ')';
-  const key = tf + p.toFixed(3) + '|' + q.toFixed(3) + '|' + cm.toFixed(2);   // p carries the reduced-motion fade too
+  // The rectangle that is drawn (d) is the springs' rectangle, except that the top edge starts late: the
+  // panel first grows down and out from the widget's top edge, then the top lifts away (a launcher's
+  // container transform). While the finger holds the sheet the top follows it 1:1.
+  const d = EX.d;
+  EX.dw += ((EX.drag ? 1 : 0) - EX.dw) * (1 - Math.exp(-dt * 16));
+  const dY = dst[1] - src[1];
+  let top = s[1];
+  if (!calm && Math.abs(dY) > 24) {
+    const f = (s[1] - src[1]) / dY, u = clamp((f - 0.2) / 0.8, 0, 1);
+    top = lerp(src[1] + dY * (f < 0 || f >= 1 ? f : Math.pow(u, 1.5)), s[1], EX.dw);
+  }
+  d[0] = s[0]; d[1] = top; d[2] = s[2]; d[3] = Math.max(1, s[1] + s[3] - top); d[4] = s[4];
+  const sx = Math.max(0.02, d[2] / dst[2]), sy = Math.max(0.02, d[3] / dst[3]);
+  const tf = 'translate3d(' + (d[0] - dst[0]).toFixed(2) + 'px,' + (d[1] - dst[1]).toFixed(2) + 'px,0) scale(' + sx.toFixed(5) + ',' + sy.toFixed(5) + ')';
+  const key = tf + p.toFixed(3) + '|' + q.toFixed(3);   // p carries the reduced-motion fade too
   if (key !== EX.lastT) {
     dp.style.transform = tf;
-    if (CONFIG.glassWidgets) {   // quiets the page text behind the sheet; arrives once the widget's own content is gone, leaves before it returns
-      const ta = TINT * sstep(lerp(0.26, 0.6, cm), lerp(0.6, 0.95, cm), q);
+    if (CONFIG.glassWidgets) {   // solid almost at once (it hides the widget's content as that leaves), a hair of glass once open
+      const ta = lerp(1, TINT, sstep(0.5, 1, q)) * sstep(0, calm ? 0.5 : 0.22, q);
       dp.style.backgroundColor = ta < 0.002 ? '' : 'rgba(10,16,34,' + ta.toFixed(3) + ')';
     }
     dpi.style.transform = 'scale(1,' + (sx / sy).toFixed(5) + ')';
-    dp.style.borderRadius = (s[4] / sx).toFixed(1) + 'px/' + (s[4] / sy).toFixed(1) + 'px';
+    dp.style.borderRadius = (d[4] / sx).toFixed(1) + 'px/' + (d[4] / sy).toFixed(1) + 'px';
     // the sheet's own content fades in as it grows; what it shares with the widget (title,
     // main value) does not fade in from nowhere: it flies from the widget (sheetPairsUpdate)
     // Fade-through (Material's container transform): the widget's own content leaves first (it is
     // being blown up with the glass, so it must be gone by ~1.3×), the sheet's arrives after, with
     // no overlap — two layouts are never on screen at once. Reduced motion keeps a plain cross-fade.
     const sh = sstep(0.15, calm ? 0.85 : 0.6, q);         // what both share cross-dissolves while it flies
-    const co = (calm ? sstep(0.25, 1, q) : sstep(lerp(0.28, 0.6, cm), lerp(0.72, 0.95, cm), q)).toFixed(3), bo = sh.toFixed(3);
+    const co = (calm ? sstep(0.25, 1, q) : Math.pow(clamp((q - 0.03) / 0.8, 0, 1), 0.6)).toFixed(3), bo = sh.toFixed(3);   // the sheet's content is already there, dim, a few frames in
     for (const c of dh.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
     if (activePane) for (const c of activePane.el.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
     sheetPairsUpdate(p);
@@ -557,8 +565,8 @@ function expandUpdate(dt) {
     // instead of popping in at its final place while the glass is still flying
     const w = EX.w, ps = PUSH, ccx = cssW / 2, ccy = cssH / 2;
     const bx = (1 - ps) * ccx + ps * w.x, by = (1 - ps) * ccy + ps * (w.y - SC.y + (w.inHero ? heroShift : 0)), bw = ps * w.w;
-    w.el.style.transform = 'translate3d(' + ((s[0] - bx) / ps).toFixed(2) + 'px,' + ((s[1] - by) / ps).toFixed(2) + 'px,0) scale(' + (s[2] / bw).toFixed(5) + ')';
-    const wOut = calm ? sstep(0, 0.7, q) : sstep(0, lerp(0.26, 0.55, cm), q);   // back again as soon as the sheet's content is gone
+    w.el.style.transform = 'translate3d(' + ((d[0] - bx) / ps).toFixed(2) + 'px,' + ((d[1] - by) / ps).toFixed(2) + 'px,0) scale(' + (d[2] / bw).toFixed(5) + ')';
+    const wOut = calm ? sstep(0, 0.7, q) : sstep(0, 0.18, q);   // gone in the first frames of the zoom, back in the last ones of the close
     if (calm || !SMP.length) w.el.style.opacity = (1 - wOut).toFixed(3);
     else {                                                // the widget's other content leaves first, its title and value stay to cross-dissolve with the sheet's
       w.el.style.opacity = '';
@@ -586,7 +594,7 @@ function finishClose() {
   w.el.style.opacity = '1'; for (const c of w.el.children) c.style.opacity = ''; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
   for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
   SMP.length = 0;
-  EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.cm = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = ''; dp.style.backgroundColor = '';
+  EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.cm = 0; EX.dw = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = ''; dp.style.backgroundColor = '';
   CS.c = null;                         // the sheet stays built (and laid out) for next time
   lastCT = ''; MF.lk = '';             // the page's transform and opacity are rewritten next frame
 }
@@ -1369,7 +1377,7 @@ function boot() {
   }, 60000);
   installManifest();
   registerSW();
-  window.ciel = { CONFIG, P, T, S, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get morph() { return MF.p; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, prog: EX.prog, q: +EX.q.toFixed(3), dim: UI_DIM, s: Array.from(EX.s).map(v => +v.toFixed(1)) }; },
+  window.ciel = { CONFIG, P, T, S, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get morph() { return MF.p; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, prog: EX.prog, q: +EX.q.toFixed(3), dim: UI_DIM, s: Array.from(EX.s).map(v => +v.toFixed(1)), d: Array.from(EX.d).map(v => +v.toFixed(1)) }; },
     step: dt => { uiUpdate(dt); drawFrame(dt); }, get renderer() { return gpu ? 'webgpu' : gl ? 'webgl2' : 'none'; },   // deterministic stepping for frame-by-frame tests
     // self-check of the celestial frame: the sun's RA/dec recovered from the local→equatorial matrix vs. the ephemeris
     sky: () => { const e = [0, 1, 2].map(i => EQM[i] * SUND[0] + EQM[3 + i] * SUND[1] + EQM[6 + i] * SUND[2]); return { ra: Math.atan2(e[1], e[0]), dec: Math.asin(e[2]), sra: A.sra, sdec: A.sdec }; } };
