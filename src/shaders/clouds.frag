@@ -1,5 +1,5 @@
 #version 300 es
-/* ── Volumetric clouds ──────────────────────────────────────────────────────────────────────
+/* ── Volumetric clouds ──────────────────────────────────────────────────────────────────────────────────────────────────
    Ray-marched through a spherical cloud shell above a curved Earth.
 
    Framing a photographer would choose: in fair weather the sky overhead stays
@@ -7,6 +7,16 @@
    the temperature, bases melting into the haze. Only rain, snow and fog
    bring the deck overhead. The bank lives in its own buffer band (uBand),
    so every pixel of the buffer is spent on cloud.
+
+   Towers  a warm, unsettled (or stormy) sky is convective (uWeather.w): a
+           jittered 16 km grid of the drifting map may each own a cumulonimbus
+           of its own radius and height — a column that flares at its foot and
+           slims as it climbs, billowing sides, then a flat elliptical anvil
+           that spreads about twice as wide as the column. Towers stand 17 –
+           35 km out and the cumulus stand further back below them, so the
+           trunks show. Every tower tops out at its own height (and every
+           cumulus at its own, tall cells standing further back), so the
+           skyline is ragged rather than one wall of equal height.
 
    Shape   real Perlin-Worley noise volumes from lightest/clouds (Nikita
            Agafonov, MIT): a 64³ billow "shape" volume, eroded at the edges
@@ -52,7 +62,7 @@ uniform vec2  uTan;
 uniform vec3  uSunDir, uMoonDir;
 uniform vec3  uLightDir;         // shadowing direction: the sun, handing over to the moon
 uniform vec3  uLight;            // x sun illuminance, y moon illuminance, z sun share of uLightDir
-uniform vec4  uWeather;          // coverage, stratiform, density, darkness
+uniform vec4  uWeather;          // coverage, stratiform, density, convection (towers + anvils)
 uniform vec4  uWindOff;          // xy weather drift (km), z evolution, w erosion drift
 uniform float uFrame;
 uniform vec4  uFlash;            // xyz direction, w intensity
@@ -76,24 +86,111 @@ vec3 transmitSoft(sampler2D Tr, float r, float mu) {
   float muH = -sqrt(max(1.0 - (RG * RG) / (r * r), 0.0));
   return texture(Tr, transUV(r, max(mu, muH + 0.004))).rgb * smoothstep(muH - 0.03, muH + 0.012, mu);
 }
-float gCov, gStrat, gDens, gHB, gTh, gLod;   // gLod: shape-volume mip for the current sample's pixel footprint
-// local coverage and tower height at a point (weather map only — cheap)
-vec3 cellAt(vec2 wp, float horiz) {
+float gCov, gStrat, gDens, gCb, gHB, gTh, gTh0, gLod, gBandFade, gLc, gWho, gHa;   // gWho: which structure the last sample belongs to (0 cumulus, 1 tower, 2 anvil)
+// gCb: convective character 0..1 · gTh0: the fair-weather shell thickness (the unit of the ambient gradient)
+
+// ── cumulus: cells of the weather map (cheap: set once per march step) ──
+float cWm, cCc, cClr, cTow;      // cell value, cell cover, distance mask, top (km above the base)
+// ── cumulonimbus: discrete towers on a jittered grid ──
+float cTw, cTwTop, cTwRr, cTwAct, cTwA, cTwATop, cTwAr;   // tower: cover, top (km above the base), normalised radius, activity; anvil: cover, top, normalised radius
+
+vec4 hash42(vec2 p) {
+  vec4 p4 = fract(vec4(p.xyxy) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+  p4 += dot(p4, p4.wzxy + 33.33);
+  return fract((p4.xxyz + p4.yzzw) * p4.zywx);
+}
+// Every 16 km cell of the (wind-drifting) map may own a cumulonimbus: a column of its own radius and height,
+// topped by a flat anvil that spreads about 2.2× wider. The more convective the sky, the more cells convect.
+// Towers stand 17 – 35 km off, so a 9 km column still tops out under the temperature, and the cumulus
+// are pushed back below them so the trunks show.
+void towersAt(vec2 wp, float horiz) {
+  cTw = 0.0; cTwA = 0.0; cTwTop = 1.0; cTwATop = 1.0; cTwAr = 1.0; cTwRr = 2.0; cTwAct = 0.0;
+  if (gCb < 0.01 || horiz < 12.0) return;                             // nothing overhead, nothing in a clear sky
+  vec2 gi = floor(wp * (1.0 / 16.0));
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    vec2 id = gi + vec2(float(i), float(j));
+    vec4 h = hash42(id);
+    if (h.x > gCb * 0.9) continue;
+    vec2 ctr = (id + 0.2 + 0.6 * h.yz) * 16.0;
+    float dc = distance(ctr, uWindOff.xy);                             // from the camera
+    float act = smoothstep(16.0, 21.0, dc) * (1.0 - smoothstep(31.0, 36.0, dc));
+    if (act <= 0.0) continue;
+    float R = 2.3 + 1.8 * h.w;                                         // column radius, km
+    float top = 6.6 + 3.2 * fract(h.w * 7.13 + h.y * 3.7);             // its own height above the base (bigger is not always taller)
+    float r = distance(wp, ctr);
+    float mb = (1.0 - smoothstep(0.70, 1.0, r / R)) * act;
+    // the anvil is not round: stretched along a direction of its own (the high-level wind)
+    float an = 6.2832 * fract(h.z * 5.3 + h.x * 2.9);
+    vec2 d = wp - ctr, u = vec2(cos(an), sin(an));
+    float Ra = R * (1.9 + 0.7 * fract(h.y * 9.1));
+    float ra = length(vec2(dot(d, u) * (1.0 / 1.5), dot(d, vec2(-u.y, u.x)) * 1.2)) / Ra;
+    float ma = (1.0 - smoothstep(0.30, 1.0, ra)) * act;
+    if (mb > cTw) { cTw = mb; cTwTop = top; cTwRr = r / R; cTwAct = act; }
+    if (ma > cTwA) { cTwA = ma; cTwATop = top; cTwAr = ra; }
+  }
+}
+void cellAt(vec2 wp, float horiz) {
   // explicit LODs everywhere in the march: inside its branches implicit
   // derivatives are undefined and would pick random (blocky) mip levels
   vec2 wm2 = textureLod(uWeatherMap, wp * 0.032, 0.0).rg;
-  float wm = wm2.r * 0.78 + textureLod(uWeatherMap, wp * 0.079 + 0.37, 0.0).r * 0.22;
-  // cells never close completely (≤ 62 % of the bank) unless it rains: a cloudy
+  float wmB = textureLod(uWeatherMap, wp * 0.079 + 0.37, 0.0).r;
+  cWm = wm2.r * 0.78 + wmB * 0.22;
+  // cells never close completely (<= 62 % of the bank) unless it rains: a cloudy
   // sky stays sculpted — more and taller masses, darker gaps — not a grey lid
-  float cc = mix(min(gCov, 0.62), gCov, gStrat);
-  float cell = smoothstep(1.0 - cc - 0.10, 1.0 - cc + 0.14, wm);
-  cell *= smoothstep(uClear.x - uClear.y, uClear.x + uClear.y, horiz);     // clear sky overhead
-  float lc = cell * mix(0.62, 0.95, gCov);
-  float tow = mix(mix(0.45, 0.75, gCov) + 0.55 * wm2.g, 1.0, gStrat);     // cloudier → taller (congestus)
-  return vec3(lc, tow, wm);
+  cCc = mix(min(gCov, 0.62), gCov, gStrat);
+  // tops, km above the base: each cell its own (cloudier -> taller, as before)
+  cTow = gTh0 * mix(mix(0.45, 0.75, gCov) + 0.55 * wm2.g, 1.0, gStrat) * (1.0 - 0.55 * gCb);   // under towers the cumulus stay low, so the trunks stand clear
+  // taller cells start further off, so every top lands at a similar but never identical elevation:
+  // a ragged skyline instead of one wall; the far edge fades, never cuts
+  float rc = uClear.x * (0.60 + 0.42 * cTow / gTh0) * (1.0 + 0.7 * gCb);   // cumulus stand back below the towers
+  float far = 26.0 + 8.0 * gCb;
+  cClr = smoothstep(rc - uClear.y, rc + uClear.y, horiz) * gBandFade * (1.0 - smoothstep(far, 41.0, horiz));
+  towersAt(wp, horiz);
+  float fade = gBandFade * (1.0 - smoothstep(far, 41.0, horiz));
+  cTw *= fade; cTwA *= fade; cTwAct *= fade;
 }
-float coarse(vec3 q, float h, float lc, float tow) {
-  return clamp(remap(textureLod(uShape, q * 0.22, gLod).r * profile(clamp(h / tow, 0.0, 1.0), gStrat), 1.0 - lc, 1.0, 0.0, 1.0), 0.0, 1.0);
+// cumulus cover at relative height hn (0 base … 1 top)
+float cellLc(float hn) {
+  return smoothstep(1.0 - cCc - 0.10, 1.0 - cCc + 0.14, cWm) * cClr * mix(0.62, 0.95, gCov);
+}
+// the tower's height signal: full-bodied, easing off toward the anvil
+float profileCb(float hn) {
+  return smoothstep(0.0, 0.05, hn) * mix(1.0, 0.8, smoothstep(0.3, 0.8, hn)) * (1.0 - smoothstep(0.80, 0.97, hn));
+}
+// coarse density at hk km above the base, at shape position q (also sets gLc, the cover it used).
+// Cumulus, tower and anvil share one noise fetch; nothing is fetched where all three are empty.
+float coarseAt(vec3 q, float hk, float lod) {
+  float hn = hk / cTow;
+  float lc = hn < 1.0 ? cellLc(hn) : 0.0;
+  float hnT = hk / cTwTop;
+  // the column flares at its foot, where it grows out of the cumulus, and slims as it climbs to its anvil
+  float lcT = 0.0;
+  if (cTwAct > 0.0 && hnT < 1.0) {
+    float flare = 1.0 + 0.7 * (1.0 - smoothstep(0.0, 0.30, hnT)) - 0.22 * smoothstep(0.10, 0.75, hnT);
+    lcT = 0.95 * (1.0 - smoothstep(0.70, 1.0, cTwRr / flare)) * cTwAct;
+  }
+  float thk = mix(2.3, 0.9, smoothstep(0.15, 1.0, cTwAr));            // anvil slab: thick over the trunk, thinning to its rim
+  float ha = (hk - (cTwATop - thk)) / thk;
+  float lcA = (cTwA > 0.0 && ha > 0.0 && ha < 1.0) ? cTwA * 0.92 : 0.0;
+  gLc = max(lc, max(lcT, lcA));
+  if (gLc < 0.004) return 0.0;
+  float s = textureLod(uShape, q * 0.22, lod).r;
+  float c = 0.0;
+  gWho = 0.0; gHa = 0.0;
+  if (lc > 0.004) c = clamp(remap(s * profile(clamp(hn, 0.0, 1.0), gStrat), 1.0 - lc, 1.0, 0.0, 1.0), 0.0, 1.0);
+  if (lcT > 0.004) {
+    float pc = profileCb(clamp(hnT, 0.0, 1.0));
+    float ct = clamp(remap(s * pc, 1.0 - lcT, 1.0, 0.0, 1.0), 0.0, 1.0);
+    ct = max(ct, 0.55 * smoothstep(0.55, 0.90, lcT) * pc);              // an opaque heart: the noise only carves the outside (no see-through trunk)
+    if (ct > c) { c = ct; gWho = 1.0; }
+  }
+  if (lcA > 0.004) {
+    float pa = smoothstep(0.0, 0.18, ha) * (1.0 - smoothstep(0.80, 1.0, ha));   // flat underside, flat top
+    float ca = clamp(remap(s * pa, 1.0 - lcA, 1.0, 0.0, 1.0), 0.0, 1.0);
+    ca = max(ca, 0.5 * smoothstep(0.45, 0.85, cTwA) * pa);
+    if (ca > c) { c = ca; gWho = 2.0; gHa = ha; }
+  }
+  return c;
 }
 
 void main() {
@@ -108,13 +205,15 @@ void main() {
   float pxAng = 2.0 * uTan.y * (uBand.y - uBand.x) / hres.y;   // one history pixel, in radians
 
   gCov = uWeather.x; gStrat = uWeather.y; gDens = uWeather.z;
-  gHB = mix(1.4, 0.8, gStrat); gTh = mix(3.2, 1.2, gStrat);
+  gCb = uWeather.w * (1.0 - smoothstep(0.15, 0.55, gStrat));          // decks stay flat
+  gHB = mix(1.4, 0.8, gStrat); gTh0 = mix(3.2, 1.2, gStrat);
+  gTh = mix(gTh0 * 1.25, 10.5, gCb);                                   // room for the tallest cumulus, or for the towers
   vec3 C = vec3(0.0, -RG, 0.0), ro = vec3(0.0, CAM_H, 0.0), roc = ro - C;
   float t0 = shell(roc, rd, RG + gHB), t1 = shell(roc, rd, RG + gHB + gTh);
   t0 = max(t0, (uClear.x - uClear.y) / hl);                  // skip the clear zone overhead
   t1 = min(t1, min(t0 + 34.0, 41.0 / hl));                   // and the far haze
   // the bank fades out toward the top of its band, never cut by the buffer edge
-  float bandFade = 1.0 - smoothstep(0.80, 1.0, hv.y) * step(uBand.y, 0.999);
+  gBandFade = 1.0 - smoothstep(0.80, 1.0, hv.y) * step(uBand.y, 0.999);
 
   // jitter: a random start per pixel, advanced by the golden ratio each time this
   // sub-pixel is traced (every 4th frame) — the samples of every pixel cover the
@@ -149,15 +248,15 @@ void main() {
     vec3 p = ro + rd * t;
     vec3 pc = p - C;
     float rp = length(pc);
-    float h = clamp((rp - RG - gHB) / gTh, 0.0, 1.0);
+    float hk = clamp(rp - RG - gHB, 0.0, gTh);                       // km above the cloud base
+    float h = clamp(hk / gTh0, 0.0, 1.0);                             // ambient gradient: always the fair-weather shell
     vec2 wp = p.xz + uWindOff.xy;
     // shape texel ≈ 71 m: the mip whose texel matches one pixel — never coarser,
     // since a thresholded trilinear grid draws boxy contours once texels exceed a pixel
     gLod = max(0.0, log2(t * pxAng / 0.071));
-    vec3 cl = cellAt(wp, t * hl);
-    // one readable group: the bank ends by ~40 km (beyond, clouds shrink below a
+    // one readable group: the bank ends by ~41 km (beyond, clouds shrink below a
     // few pixels and only muddy it); the far edge fades, never cuts
-    float lc = cl.x * bandFade * (1.0 - smoothstep(26.0, 40.0, t * hl)), tow = cl.y;
+    cellAt(wp, t * hl);
     vec3 q = vec3(wp.x, p.y + uWindOff.z, wp.y);
     // one march: the stride is fine where there is cloud, and grows
     // geometrically (to ~6×) through empty air — inside or between cells — so a
@@ -165,7 +264,8 @@ void main() {
     // once and refines. Strides scale with distance: the same angular sampling
     // near and far.
     float dtS = clamp(t * 0.0055, 0.05, 0.36) * (nIn < 3.0 ? 0.5 : 1.0);
-    float c = lc > 0.004 ? coarse(q, h, lc, tow) : 0.0;
+    float c = coarseAt(q, hk, gLod);
+    float lc = gLc, who = gWho, haS = gHa;                             // (the shadow rays below overwrite the globals)
     if (c <= 0.0) {
       tSafe = t; emp += 1.0;
       t += ref > 0.0 ? dtS : dtS * min(1.0 + 0.5 * emp, 6.0) * (0.85 + 0.3 * jit);
@@ -178,7 +278,7 @@ void main() {
     emp = 0.0; ref = 0.0;
     float er = textureLod(uErosion, q * 0.32 + uWindOff.w, gLod).r;
     er = mix(er, 1.0 - er, clamp(h * 4.0, 0.0, 1.0));                // wispy bases, billowy (cauliflower) tops
-    float ew = 0.18 * (1.0 - 0.7 * smoothstep(14.0, 45.0, t));        // detail fades where a pixel can't hold it
+    float ew = 0.18 * (1.0 + 0.6 * max(cTw, cTwA)) * (1.0 - 0.7 * smoothstep(14.0, 45.0, t));  // detail fades where a pixel can't hold it; towers: stronger cauliflower
     float lk = 0.65 + 0.35 * lc;
     float d = smoothstep(0.0, 0.34, clamp(remap(c, er * ew, 1.0, 0.0, 1.0), 0.0, 1.0)) * lk * gDens;
     if (d > 0.0005) {
@@ -188,25 +288,33 @@ void main() {
       //  distances anyway, and a low sun no longer lights the clouds in specks)
       for (int k = 0; k < 5; k++) {
         float sd = SD5[k];
-        vec3 lq = q + uLightDir * sd;
-        float lh = clamp((h + uLightDir.y * sd / gTh) / tow, 0.0, 1.0);
-        float sc = clamp(remap(textureLod(uShape, lq * 0.22, gLod + 1.0 + float(k) * 0.6).r * profile(lh, gStrat), 1.0 - lc, 1.0, 0.0, 1.0), 0.0, 1.0);
+        float sc = coarseAt(q + uLightDir * sd, hk + uLightDir.y * sd, gLod + 1.0 + float(k) * 0.6);
         od += sc * SW5[k];
       }
       {
         vec3 lq = q + uLightDir * 0.12;
-        float lh = clamp((h + uLightDir.y * 0.12 / gTh) / tow, 0.0, 1.0);
-        float sc = clamp(remap(textureLod(uShape, lq * 0.22, gLod).r * profile(lh, gStrat), 1.0 - lc, 1.0, 0.0, 1.0), 0.0, 1.0);
+        float lhk = hk + uLightDir.y * 0.12;
+        float sc = coarseAt(lq, lhk, gLod);
         float le = textureLod(uErosion, lq * 0.32 + uWindOff.w, gLod).r;
-        float ed = clamp(remap(sc, mix(le, 1.0 - le, clamp(lh * 4.0, 0.0, 1.0)) * 0.22, 1.0, 0.0, 1.0), 0.0, 1.0);
+        float ed = clamp(remap(sc, mix(le, 1.0 - le, clamp(lhk / gTh0 * 4.0, 0.0, 1.0)) * 0.22, 1.0, 0.0, 1.0), 0.0, 1.0);
         od += (ed - sc) * 0.6;
       }
       od = od * lk * gDens * 22.0 + gStrat * gCov * 3.5;
       vec3 nUp = pc / rp;
       vec3 Lc = transmitSoft(uTrans, rp, dot(nUp, uSunDir)) * (uLight.x * uLight.z) + transmitSoft(uTrans, rp, dot(nUp, uMoonDir)) * (uLight.y * (1.0 - uLight.z));
+      od *= who > 0.5 ? 0.55 : 1.0;                                    // deep towers keep their lit sides bright (strong forward scattering)
       float ms = ph0 * exp(-od) + 0.50 * ph1 * exp(-od * 0.40) + 0.25 * ph2 * exp(-od * 0.15);
       float powder = mix(1.0 - exp(-d * 9.0), 1.0, clamp(ct * 0.5 + 0.5, 0.0, 1.0) * 0.6 + 0.2);
       vec3 amb = mix(ambBot, ambTop, h) * (0.30 + 0.70 * pow(h, 0.7));
+      if (who > 0.5) {
+        // towers are lit by where they stand in their own structure, not by altitude: the trunk
+        // darkens toward its base and under the overhang, the anvil is dark beneath and bright on top
+        float hb = clamp(hk / max(cTwATop - 2.3, 1.0), 0.0, 1.0);                      // 0 at the base … 1 under the anvil
+        vec3 ambB = mix(ambBot, ambTop, hb) * (0.42 + 0.58 * pow(hb, 0.7));
+        ambB = mix(ambB, ambBot * 1.3, cTwA * smoothstep(0.55, 0.9, hb));              // under the overhang: as dark as the anvil's own underside
+        vec3 ambS = mix(ambBot * 1.3, ambTop, smoothstep(0.55, 1.0, haS));
+        amb = who > 1.5 ? ambS : ambB;
+      }
       vec3 S = Lc * ms * powder * 4.6 + amb * 0.9;           // strong key light, restrained fill: deep, readable shadow sides
       float dtE = dtS * mix(3.0, 1.0, smoothstep(0.0, 0.25, d));
       float Ts = exp(-d * 16.0 * dtE);                                 // σ = 16 /km at density 1
