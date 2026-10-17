@@ -439,7 +439,7 @@ function sheetPairsUpdate(p) {
    it dismisses with velocity hand-off (Apple's projection decides).
    ============================================================================= */
 const EX = { active: false, open: false, w: null, s: new Float32Array(5), v: new Float32Array(5), t: new Float32Array(5),
-  src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, q: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '', cm: 0, dw: 0, d: new Float32Array(5), lv: '', lc: '', lr: '',
+  src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, q: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '', cm: 0, dw: 0, d: new Float32Array(5), lv: '', lc: '', lr: '', lg: '',
   ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0, rest: false };
 // sheet springs (response s, damping ratio): open and close are critically damped
 // or nearly so — the zoom lands without wobble; a throw back up keeps a little life
@@ -450,7 +450,7 @@ const SP_OPEN = [0.40, 0.9], SP_CLOSE = [0.36, 0.96], SP_BACK = [0.32, 0.82];
 // EX.q ramps steadily (and turns around mid-way without a jump); while dragging it follows the finger.
 const Q_OPEN = 0.48, Q_CLOSE = 0.40;
 const TINT = 0.94;                                    // the sheet panel is solid while it grows, and settles at this opacity once open
-const detail = $('detail'), dp = $('dp'), dpi = $('dpi'), dh = $('dh'), db = $('db'), dpv = $('dpv'), dpc = $('dpc');
+const detail = $('detail'), dp = $('dp'), dpi = $('dpi'), dh = $('dh'), db = $('db'), dpv = $('dpv');
 let safeT = 0, safeB = 0, safeL = 0, safeR = 0;
 function measureSafe() {
   const cs = getComputedStyle(document.documentElement);
@@ -544,9 +544,12 @@ function expandUpdate(dt) {
   const key = tf + p.toFixed(3) + '|' + q.toFixed(3);   // p carries the reduced-motion fade too
   if (key !== EX.lastT) {
     dp.style.transform = tf;
-    if (CONFIG.glassWidgets) {   // the panel's veil: solid almost at once (it hides the widget's content as that leaves), a hair of glass once open
-      const ta = (lerp(1, TINT, sstep(0.5, 1, q)) * sstep(0, calm ? 0.5 : 0.22, q)).toFixed(3);
+    if (CONFIG.glassWidgets) {   // the panel's veil: opaque almost at once (the page's text must not show through a sheet), but its colour starts as the widget's glass and deepens into the sheet's navy, so the change is a gradient, not a jump
+      const ta = (lerp(1, TINT, sstep(0.55, 1, q)) * sstep(0, calm ? 0.5 : 0.3, q)).toFixed(3);
       if (ta !== EX.lv) { dpv.style.opacity = ta; EX.lv = ta; }
+      const dk = sstep(-0.12, 0.25, sunE) * (1 - 0.5 * clamp(P[I_DARK], 0, 1)), g = sstep(0.04, calm ? 0.9 : 0.8, q);
+      const vc = 'rgb(' + Math.round(lerp(lerp(16, 62, dk), 10, g)) + ',' + Math.round(lerp(lerp(24, 84, dk), 16, g)) + ',' + Math.round(lerp(lerp(46, 120, dk), 34, g)) + ')';
+      if (vc !== EX.lg) { dpv.style.backgroundColor = vc; EX.lg = vc; }
     }
     dpi.style.transform = 'scale(1,' + (sx / sy).toFixed(5) + ')';
     const br = (d[4] / sx).toFixed(1) + 'px/' + (d[4] / sy).toFixed(1) + 'px';
@@ -557,10 +560,10 @@ function expandUpdate(dt) {
     // being blown up with the glass, so it must be gone by ~1.3×), the sheet's arrives after, with
     // no overlap — two layouts are never on screen at once. Reduced motion keeps a plain cross-fade.
     const sh = sstep(0.15, calm ? 0.85 : 0.6, q);         // what both share cross-dissolves while it flies
-    // the sheet's content is already there, dim, a few frames in: one cover layer thins out over it
-    // (the content itself is never touched — no per-element opacity layers, nothing to repaint)
-    const co = (calm ? sstep(0.25, 1, q) : Math.pow(clamp((q - 0.03) / 0.8, 0, 1), 0.6)), cv = (1 - co).toFixed(3);
-    if (cv !== EX.lc) { dpc.style.opacity = cv; EX.lc = cv; }
+    // the sheet's content fades up as one: a single opacity on its own layer (#dpi is composited anyway),
+    // so no extra layer and nothing to repaint
+    const co = calm ? sstep(0.25, 1, q) : sstep(0.08, 0.85, q), cv = co >= 0.999 ? '' : co.toFixed(3);
+    if (cv !== EX.lc) { dpi.style.opacity = cv; EX.lc = cv; }   // one opacity on the content's own layer: no extra layer, nothing repainted
     if (SMP.length) { const bo = sh.toFixed(3), cs = co.toFixed(3); for (const c of dh.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : cs; if (activePane) for (const c of activePane.el.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : cs; }
     sheetPairsUpdate(p);
     // the widget's own content rides inside the moving glass (FLIP: a transform from its
@@ -569,7 +572,7 @@ function expandUpdate(dt) {
     const w = EX.w, ps = PUSH, ccx = cssW / 2, ccy = cssH / 2;
     const bx = (1 - ps) * ccx + ps * w.x, by = (1 - ps) * ccy + ps * (w.y - SC.y + (w.inHero ? heroShift : 0)), bw = ps * w.w;
     w.el.style.transform = 'translate3d(' + ((d[0] - bx) / ps).toFixed(2) + 'px,' + ((d[1] - by) / ps).toFixed(2) + 'px,0) scale(' + (d[2] / bw).toFixed(5) + ')';
-    const wOut = calm ? sstep(0, 0.7, q) : sstep(0, 0.18, q);   // gone in the first frames of the zoom, back in the last ones of the close
+    const wOut = calm ? sstep(0, 0.7, q) : sstep(0, 0.26, q);   // gone in the first frames of the zoom, back in the last ones of the close
     if (calm || !SMP.length) w.el.style.opacity = (1 - wOut).toFixed(3);
     else {                                                // the widget's other content leaves first, its title and value stay to cross-dissolve with the sheet's
       w.el.style.opacity = '';
@@ -597,7 +600,7 @@ function finishClose() {
   w.el.style.opacity = '1'; for (const c of w.el.children) c.style.opacity = ''; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
   for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
   SMP.length = 0;
-  EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.cm = 0; EX.dw = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = ''; dpv.style.opacity = ''; dpc.style.opacity = ''; EX.lv = EX.lc = EX.lr = '';
+  EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.cm = 0; EX.dw = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = ''; dpv.style.opacity = ''; dpv.style.backgroundColor = ''; dpi.style.opacity = ''; EX.lv = EX.lc = EX.lr = EX.lg = '';
   CS.c = null;                         // the sheet stays built (and laid out) for next time
   lastCT = ''; MF.lk = '';             // the page's transform and opacity are rewritten next frame
 }
@@ -650,7 +653,7 @@ dh.addEventListener('pointercancel', e => dragEnd(e.timeStamp));
 // top of its scroll the body is `touch-action: pan-down`: the browser only scrolls for
 // gestures that start upward, and a pull downward arrives here as pointer events —
 // the sheet follows it. Anywhere else it is a plain native scroller.
-function syncTouchAction() { const ta = db.scrollTop <= 0 ? 'pan-down' : 'pan-y'; if (db.style.touchAction !== ta) db.style.touchAction = ta; }
+function syncTouchAction() { const top = db.scrollTop <= 0, ta = top ? 'pan-down' : 'pan-y'; if (db.style.touchAction !== ta) { db.style.touchAction = ta; db.classList.toggle('sc', !top); } }   // (the soft top edge is a mask = an offscreen pass: only while the body is scrolled)
 db.addEventListener('scroll', syncTouchAction, { passive: true });
 let bp = null;
 db.addEventListener('pointerdown', e => {
