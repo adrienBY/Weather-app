@@ -255,14 +255,15 @@ function uiUpdate(dt) {
   if (bv !== lastBar) { bar.style.setProperty('--bar', bv); lastBar = bv; }
   const s = PUSH, cx = cssW / 2, cy = cssH / 2;
   const ct = 'translate3d(' + ((1 - s) * cx).toFixed(2) + 'px,' + (-s * y + (1 - s) * cy).toFixed(2) + 'px,0) scale(' + s.toFixed(4) + ')';
+  const fadeN = 1 - UI_DIM;                               // page text, top bar and the flying copies dissolve across the whole zoom (UI_DIM is already eased)
   const ck = ct + UI_DIM.toFixed(3);
   if (ck !== lastCT) {
     // The glass is composed in WebGL *under* the DOM, so it cannot blur page
     // text. Instead the page recedes (scale + fade) as the sheet grows over it.
-    const fade = (1 - sstep(0, 0.5, UI_DIM)).toFixed(3);
+    const fade = fadeN.toFixed(3);
     content.style.transform = ct; content.style.opacity = fade; bar.style.opacity = fade; lastCT = ck;
   }
-  morphUpdate(dt, y, s, 1 - sstep(0, 0.5, UI_DIM));
+  morphUpdate(dt, y, s, fadeN);
   // glass slots
   const kx = cw / cssW, ky = ch / cssH;
   for (let i = 0; i < SHEET_SLOT; i++) {
@@ -405,7 +406,7 @@ function sheetPairs(w) {
   const fz = el => parseFloat(getComputedStyle(el).fontSize) || 16;
   const pair = (qa, fa, b, fb, bx, by) => {
     const a = w.el.querySelector(qa); if (!a || !b) return;
-    SMP.push({ qa, b, ax: a.offsetLeft, ay: a.offsetTop, ah: a.offsetHeight, bx, by, bh: b.offsetHeight, k: fz(fb) / fz((fa && a.querySelector(fa)) || a) });
+    SMP.push({ qa, a, b, ax: a.offsetLeft, ay: a.offsetTop, ah: a.offsetHeight, bx, by, bh: b.offsetHeight, k: fz(fb) / fz((fa && a.querySelector(fa)) || a) });
   };
   const dt = dh.querySelector('.dtitle');
   pair('.wh', 'span', dt, $('dTitle'), dh.offsetLeft + dt.offsetLeft, dh.offsetTop + dt.offsetTop);
@@ -424,7 +425,7 @@ function sheetPairsUpdate(p) {
     const bl = s[0] + q.bx * Zs, bcy = s[1] + (q.by + q.bh / 2) * Zs;
     const rl = lerp(al, bl, p), rcy = lerp(acy, bcy, p);
     const sa = Math.pow(Zw, 1 - p) * Math.pow(Zs * q.k, p), sb = sa / q.k;
-    const a = w.el.querySelector(q.qa);
+    const a = q.a;
     if (a) a.style.transform = 'translate(' + ((rl - al) / Zw).toFixed(2) + 'px,' + ((rcy - sa * q.ah / 2 - s[1]) / Zw - q.ay).toFixed(2) + 'px) scale(' + (sa / Zw).toFixed(4) + ')';
     q.b.style.transform = 'translate(' + ((rl - bl) / Zs).toFixed(2) + 'px,' + ((rcy - sb * q.bh / 2 - s[1]) / Zs - q.by).toFixed(2) + 'px) scale(' + (sb / Zs).toFixed(4) + ')';
   }
@@ -438,11 +439,16 @@ function sheetPairsUpdate(p) {
    it dismisses with velocity hand-off (Apple's projection decides).
    ============================================================================= */
 const EX = { active: false, open: false, w: null, s: new Float32Array(5), v: new Float32Array(5), t: new Float32Array(5),
-  src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '',
+  src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, q: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '',
   ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0, rest: false };
 // sheet springs (response s, damping ratio): open and close are critically damped
 // or nearly so — the zoom lands without wobble; a throw back up keeps a little life
 const SP_OPEN = [0.40, 0.9], SP_CLOSE = [0.36, 0.96], SP_BACK = [0.32, 0.82];
+// The fades that go with the zoom (page text, top bar, dim, the widget's own content, the sheet's
+// content) are keyed to time, not to the spring's progress: a spring covers most of its distance in
+// its first instants, so a fade windowed on that progress is over in a few frames — a cut.
+// EX.q ramps steadily (and turns around mid-way without a jump); while dragging it follows the finger.
+const Q_OPEN = 0.48, Q_CLOSE = 0.40;
 const detail = $('detail'), dp = $('dp'), dpi = $('dpi'), dh = $('dh'), db = $('db');
 let safeT = 0, safeB = 0, safeL = 0, safeR = 0;
 function measureSafe() {
@@ -507,21 +513,26 @@ function expandUpdate(dt) {
   EX.fade = calm ? clamp(EX.fade + (EX.open ? dt : -dt) / 0.2, 0, 1) : 1;
   const p = clamp(EX.prog, 0, 1) * EX.fade;
   EX.hide = sstep(0, 0.22, p);
-  PUSH = 1 - (calm ? 0 : 0.06 * p); UI_DIM = p;
+  if (calm) EX.q = p;
+  else if (EX.drag) EX.q += (p - EX.q) * (1 - Math.exp(-dt * 30));
+  else { const st = dt / (EX.open ? Q_OPEN : Q_CLOSE); EX.q = EX.open ? Math.min(1, EX.q + st) : Math.max(0, EX.q - st); }
+  const q = EX.q;
+  PUSH = 1 - (calm ? 0 : 0.06 * p); UI_DIM = sstep(0, 1, q);
   const fo = EX.fade.toFixed(3);
   if (fo !== EX.lastF) { dp.style.opacity = fo === '1.000' ? '' : fo; EX.lastF = fo; }
   // transform-only zoom (compositor, no repaint): the clip box scales non-uniformly
   // to the moving rectangle, the content inside counter-scales to a uniform zoom
   const sx = Math.max(0.02, s[2] / dst[2]), sy = Math.max(0.02, s[3] / dst[3]);
   const tf = 'translate3d(' + (s[0] - dst[0]).toFixed(2) + 'px,' + (s[1] - dst[1]).toFixed(2) + 'px,0) scale(' + sx.toFixed(5) + ',' + sy.toFixed(5) + ')';
-  const key = tf + p.toFixed(3);                       // p carries the reduced-motion fade too
+  const key = tf + p.toFixed(3) + '|' + q.toFixed(3);   // p carries the reduced-motion fade too
   if (key !== EX.lastT) {
     dp.style.transform = tf;
     dpi.style.transform = 'scale(1,' + (sx / sy).toFixed(5) + ')';
     dp.style.borderRadius = (s[4] / sx).toFixed(1) + 'px/' + (s[4] / sy).toFixed(1) + 'px';
     // the sheet's own content fades in as it grows; what it shares with the widget (title,
     // main value) does not fade in from nowhere: it flies from the widget (sheetPairsUpdate)
-    const co = sstep(0.15, 0.6, p).toFixed(3), bo = sstep(0, 0.25, p).toFixed(3);
+    const sh = sstep(0.15, 0.85, q);                      // what both share cross-dissolves at the midpoint
+    const co = sstep(0.25, 1, q).toFixed(3), bo = sh.toFixed(3);
     for (const c of dh.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
     if (activePane) for (const c of activePane.el.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
     sheetPairsUpdate(p);
@@ -531,7 +542,12 @@ function expandUpdate(dt) {
     const w = EX.w, ps = PUSH, ccx = cssW / 2, ccy = cssH / 2;
     const bx = (1 - ps) * ccx + ps * w.x, by = (1 - ps) * ccy + ps * (w.y - SC.y + (w.inHero ? heroShift : 0)), bw = ps * w.w;
     w.el.style.transform = 'translate3d(' + ((s[0] - bx) / ps).toFixed(2) + 'px,' + ((s[1] - by) / ps).toFixed(2) + 'px,0) scale(' + (s[2] / bw).toFixed(5) + ')';
-    w.el.style.opacity = (1 - sstep(0, 0.2, p)).toFixed(3);
+    if (calm || !SMP.length) w.el.style.opacity = (1 - sstep(0, 0.7, q)).toFixed(3);
+    else {                                                // the widget's other content thins out early, its title and value stay to cross-dissolve with the sheet's
+      w.el.style.opacity = '';
+      const wo = (1 - sstep(0, 0.7, q)).toFixed(3), wso = (1 - sh).toFixed(3);
+      for (const c of w.el.children) c.style.opacity = SMP.some(x => x.a && (c === x.a || c.contains(x.a))) ? wso : wo;
+    }
     EX.lastT = key;
   }
   let still = !EX.drag;
@@ -540,14 +556,14 @@ function expandUpdate(dt) {
   if (!EX.open) {
     let done = true;
     for (let i = 0; i < 5; i++) if (Math.abs(s[i] - t[i]) > 0.5 || Math.abs(v[i]) > 6) done = false;
-    if (calm) done = EX.fade <= 0;
+    if (calm) done = EX.fade <= 0; else if (EX.q > 0.002) done = false;
     if (done) {
       EX.active = false; EX.rest = false; detail.classList.remove('on');
       const w = EX.w;
-      w.el.style.opacity = '1'; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
+      w.el.style.opacity = '1'; for (const c of w.el.children) c.style.opacity = ''; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
       for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
       SMP.length = 0;
-      EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
+      EX.w = null; PUSH = 1; UI_DIM = 0; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
       CS.c = null;                         // the sheet stays built (and laid out) for next time
     }
   }
@@ -1331,7 +1347,7 @@ function boot() {
   }, 60000);
   installManifest();
   registerSW();
-  window.ciel = { CONFIG, P, T, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get morph() { return MF.p; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, prog: EX.prog, dim: UI_DIM, s: Array.from(EX.s).map(v => +v.toFixed(1)) }; },
+  window.ciel = { CONFIG, P, T, S, SC, scrubTo: k => hscroll.scrollTo({ left: k * colW }), open: key => openDetail(WG.find(w => w.key === key)), close: () => closeDetail(false), refresh, pause: stop, resume: start, scrollTo: y => { SC.y = y; SC.mode = 0; }, get frames() { return frameNo; }, get morph() { return MF.p; }, get ex() { return { open: EX.open, active: EX.active, drag: EX.drag, prog: EX.prog, q: +EX.q.toFixed(3), dim: UI_DIM, s: Array.from(EX.s).map(v => +v.toFixed(1)) }; },
     step: dt => { uiUpdate(dt); drawFrame(dt); }, get renderer() { return gpu ? 'webgpu' : gl ? 'webgl2' : 'none'; },   // deterministic stepping for frame-by-frame tests
     // self-check of the celestial frame: the sun's RA/dec recovered from the local→equatorial matrix vs. the ephemeris
     sky: () => { const e = [0, 1, 2].map(i => EQM[i] * SUND[0] + EQM[3 + i] * SUND[1] + EQM[6 + i] * SUND[2]); return { ra: Math.atan2(e[1], e[0]), dec: Math.asin(e[2]), sra: A.sra, sdec: A.sdec }; } };
