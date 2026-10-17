@@ -30,6 +30,8 @@ const CONFIG = {
     haze: 0.6,                // aerosol (Mie) density (lower = deeper blue); humidity and fog add to it
     bankTop: 0.64,            // fair weather: the cloud bank stays below this screen height (under the temperature)
     clearKm: 9,               // fair weather: clear sky overhead out to this distance, so the clouds stand far off
+    towers: 1,                // cumulonimbus towers and anvils in warm, cloudy or stormy weather: 0 = never, 1 = as the weather says
+    towerRise: 0.08,          // how much higher the cloud band may reach (screen height) when towers stand in it
   },
   colors: {
     night: '#020409',         // night-sky floor (airglow, distant city glow) — '#000000' for pure AMOLED black
@@ -52,6 +54,17 @@ const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const lerp = (a, b, t) => a + (b - a) * t;
 const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const wrap1 = x => x - Math.floor(x);
+// Convective character of the sky, 0 (fair-weather cumulus) … 1 (towering cumulonimbus with anvils): a
+// broken, warm sky grows towers (an overcast one is stratus, a cold one rarely convects), a thunderstorm
+// always does. Decks (rain, snow, fog) stay flat: the shader fades it out with the stratiform amount.
+// The band of sky the clouds may occupy (top, in screen height): a deck fills the sky; fair-weather clouds stay
+// under the temperature; towers get a little more room, with hysteresis so the band doesn't flap while the weather eases.
+function skyBandTop(deck, conv) {
+  const tall = BAND[1] > CONFIG.sky.bankTop + 1e-3 && BAND[1] < 0.99;
+  const rise = (tall ? conv > 0.35 : conv > 0.55) ? CONFIG.sky.towerRise : 0;
+  return deck > 0.5 ? 1 : (deck < 0.35 ? CONFIG.sky.bankTop + rise : BAND[1]);
+}
+const convection = cov => CONFIG.sky.towers * clamp(sstep(0.3, 0.9, cov) * (1 - sstep(0.72, 0.95, cov)) * (0.15 + 0.85 * sstep(8, 24, S.temp)) + 0.7 * clamp(P[I_STORM], 0, 1), 0, 1);
 const num = v => (typeof v === 'number' && isFinite(v)) ? v : 0;
 const hexRGB = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; };
 const cap = x => x ? x.charAt(0).toUpperCase() + x.slice(1) : x;
@@ -753,8 +766,8 @@ function render(dt) {
   // stratiform only when it rains/snows or fogs: a cloudy dry sky stays a bank of 3-D cumulus
   const strat = clamp(Math.max(P[I_RAIN], P[I_SNOW]) * 0.85 + sstep(0.9, 1, cov) * 0.2 + P[I_FOG] * 0.4, 0, 1);
   // fair weather: a distant bank under the temperature; a deck (rain, snow, fog) fills the sky
-  const deck = sstep(0.25, 0.6, strat);
-  const top = deck > 0.5 ? 1 : (deck < 0.35 ? CONFIG.sky.bankTop : BAND[1]);
+  const deck = sstep(0.25, 0.6, strat), conv = convection(cov);
+  const top = skyBandTop(deck, conv);
   if (top !== BAND[1]) { BAND[1] = top; sizeClouds(); }
   // under a sheet that is zooming, being dragged or resting, the clouds are only seen
   // dimmed through a heavy blur: keep the last traced clouds and give the frame budget
@@ -776,7 +789,7 @@ function render(dt) {
     gl.uniform3fv(u.uSunDir, SUND); gl.uniform3fv(u.uMoonDir, MOOND); gl.uniform3fv(u.uLightDir, LDIR); gl.uniform3fv(u.uLight, LGT);
     const clear = CONFIG.sky.clearKm * (1 - 0.18 * cov) * (1 - deck);
     gl.uniform2f(u.uBand, BAND[0], BAND[1]); gl.uniform2f(u.uClear, clear, Math.max(0.5, clear * 0.3));
-    gl.uniform4f(u.uWeather, cov, strat, 0.85 + 0.7 * clamp(P[I_DARK], 0, 1), clamp(P[I_DARK], 0, 1));
+    gl.uniform4f(u.uWeather, cov, strat, 0.85 + 0.7 * clamp(P[I_DARK], 0, 1), conv);
     gl.uniform4f(u.uWindOff, wX, wZ, wEv, wDet);
     gl.uniform1f(u.uFrame, frameNo & 1023);
     gl.uniform4fv(u.uFlash, FLD);
