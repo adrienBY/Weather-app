@@ -43,7 +43,6 @@ const ASSETS = {
   shape: 'data:image/png;base64,__SHAPE_B64__',       // lightest/clouds 64³ Perlin-Worley shape volume (MIT)
   erosion: 'data:image/png;base64,__EROSION_B64__',   // lightest/clouds 32³ Worley erosion volume (MIT)
   weather: 'data:image/png;base64,__WEATHER_B64__',   // lightest/clouds tileable weather map (MIT)
-  milky: 'data:image/jpeg;base64,__MILKY_B64__',      // ESO/S. Brunier Milky Way panorama (CC BY 4.0)
 };
 
 /* =============================================================================
@@ -104,7 +103,7 @@ const STR = {
       'Consider reducing intense outdoor activity.', 'Avoid strenuous activity outdoors.', 'Stay indoors where possible.'],
     phases: ['New moon', 'Waxing crescent', 'First quarter', 'Waxing gibbous', 'Full moon', 'Waning gibbous', 'Last quarter', 'Waning crescent'],
     dirs: ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'], dirsL: ['North', 'North-east', 'East', 'South-east', 'South', 'South-west', 'West', 'North-west'],
-    credits: 'Weather from <a href="https://open-meteo.com">Open-Meteo</a><br>Clouds ray-marched live with noise from lightest/clouds<br>Milky Way ESO/S. Brunier · Rain drops Codrops RainEffect',
+    credits: 'Weather from <a href="https://open-meteo.com">Open-Meteo</a><br>Clouds ray-marched live with noise from lightest/clouds<br>Rain drops Codrops RainEffect',
     at: 'at', max24: 'Highest, next 24 h', min24: 'Lowest, next 24 h', gust24: 'Strongest gust, 24 h' },
   fr: { now: 'Maintenant', nowS: 'Maint.', feels: 'Ressenti', updated: 'Mis à jour', updating: 'Mise à jour…', offline: 'Hors ligne', error: 'Échec de la mise à jour',
     today: 'Auj.', todayL: 'Aujourd’hui', search: 'Chercher une ville', useLoc: 'Utiliser ma position', locating: 'Localisation…', myLoc: 'Ma position', noRes: 'Aucun résultat',
@@ -128,7 +127,7 @@ const STR = {
       'Envisagez de réduire les activités intenses en extérieur.', 'Évitez les efforts soutenus en extérieur.', 'Restez à l’intérieur si possible.'],
     phases: ['Nouvelle lune', 'Premier croissant', 'Premier quartier', 'Gibbeuse croissante', 'Pleine lune', 'Gibbeuse décroissante', 'Dernier quartier', 'Dernier croissant'],
     dirs: ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'], dirsL: ['Nord', 'Nord-est', 'Est', 'Sud-est', 'Sud', 'Sud-ouest', 'Ouest', 'Nord-ouest'],
-    credits: 'Météo fournie par <a href="https://open-meteo.com">Open-Meteo</a><br>Nuages calculés en direct, bruit de lightest/clouds<br>Voie lactée ESO/S. Brunier · Gouttes Codrops RainEffect',
+    credits: 'Météo fournie par <a href="https://open-meteo.com">Open-Meteo</a><br>Nuages calculés en direct, bruit de lightest/clouds<br>Gouttes Codrops RainEffect',
     at: 'à', max24: 'Max sur 24 h', min24: 'Min sur 24 h', gust24: 'Rafale max sur 24 h' },
 }[LANG];
 const WMO = {
@@ -308,13 +307,13 @@ function updateTargets() { sampleAt(scrubTarget, S); deriveTargets(S); T[I_SCRUB
 let canvas = $('sky');
 let gl = null, tq = null, gpuTimed = false;
 const PR = {}, UL = {};
-let vaoEmpty, vaoDrop, dropBuf, texNoise, texDrop = null, texShape = null, texErosion = null, texWeather = null, texMilky = null, texBlack = null;
+let vaoEmpty, vaoDrop, dropBuf, texNoise, texDrop = null, texShape = null, texErosion = null, texWeather = null, texBlack = null;
 let transT, skySunT, skyMoonT, HDR = false, lutHaze = -1, transHaze = -1;
 const LUT_SUN = new Float32Array(3), LUT_MOON = new Float32Array(3);
 let fieldT = [], fieldIdx = 0, fieldEnergy = 0;
 let cFresh, cHist = [], histIdx = 0, glassT, skyT, BDN = [], BUP = [], fillFrames = 3, cloudsOn = false, glassDirty = true;
 const RIP = new Float32Array(24), SPL = new Float32Array(16), WTS = new Float32Array(4), LDIR = new Float32Array(3), LGT = new Float32Array(3);
-const EQM = new Float32Array(9), GALM = new Float32Array(9), EQ_M = new Float32Array(3), EQ_W = new Float32Array(3), EQ_P = new Float32Array(3);
+const EQM = new Float32Array(9), EQ_M = new Float32Array(3), EQ_W = new Float32Array(3), EQ_P = new Float32Array(3);
 const CAMF = new Float32Array(3), CAMU = new Float32Array(3), CAMR = new Float32Array(3), CTAN = new Float32Array(2);
 const SUND = new Float32Array(3), MOOND = new Float32Array(3), MOONR = new Float32Array(3), MOONU = new Float32Array(3);
 const FLD = new Float32Array(4), RECT = new Float32Array(40), RECTP = new Float32Array(40), PRESS = new Float32Array(4);
@@ -408,12 +407,11 @@ function tex2D(img, wrapS, wrapT, mip) {
 }
 async function loadAssets() {
   try {
-    const [shape, erosion, weather, milky] = await Promise.all([ASSETS.shape, ASSETS.erosion, ASSETS.weather, ASSETS.milky].map(decode));
-    if (gpu) { gpuAssets(shape, erosion, weather, milky); return; }
+    const [shape, erosion, weather] = await Promise.all([ASSETS.shape, ASSETS.erosion, ASSETS.weather].map(decode));
+    if (gpu) { gpuAssets(shape, erosion, weather); return; }
     if (!gl) return;
     texShape = volumeFromStrip(shape, 64); texErosion = volumeFromStrip(erosion, 32);
     texWeather = tex2D(weather, gl.REPEAT, gl.REPEAT, true);
-    texMilky = tex2D(milky, gl.REPEAT, gl.CLAMP_TO_EDGE, false);   // no mips: the atan seam would pick a blurry level
     fillFrames = 3;
   } catch (e) { console.error('assets', e); }
 }
@@ -429,8 +427,8 @@ function initGL() {
     'uCamF', 'uCamU', 'uCamR', 'uTan', 'uSunDir', 'uMoonDir', 'uLightDir', 'uLight', 'uWeather', 'uWindOff', 'uFrame', 'uFlash']);
   program('resolve', 'full.vert', 'resolve.frag', ['uFresh', 'uHist', 'uFreshRes', 'uJit', 'uFill', 'uBlend']);
   program('drop', 'drop.vert', 'drop.frag', ['uAspect', 'uDrop']);
-  program('sky', 'full.vert', 'sky.frag', ['uRes', 'uTime', 'uNoise', 'uField', 'uClouds', 'uGlass', 'uTrans', 'uSkyS', 'uSkyM', 'uMilky',
-    'uCamF', 'uCamU', 'uCamR', 'uTan', 'uEqRot', 'uGalRot', 'uSunDir', 'uMoonDir', 'uMoonR', 'uMoonU', 'uSun', 'uMoon', 'uMoonL', 'uLight',
+  program('sky', 'full.vert', 'sky.frag', ['uRes', 'uTime', 'uNoise', 'uField', 'uClouds', 'uGlass', 'uTrans', 'uSkyS', 'uSkyM',
+    'uCamF', 'uCamU', 'uCamR', 'uTan', 'uEqRot', 'uSunDir', 'uMoonDir', 'uMoonR', 'uMoonU', 'uSun', 'uMoon', 'uMoonL', 'uLight',
     'uExposure', 'uNight', 'uDrift2', 'uCloud', 'uWx', 'uWind', 'uFlash', 'uBolt', 'uRip', 'uW', 'uBand', 'uEye']);
   program('down', 'full.vert', 'down.frag', ['uSrc', 'uDst', 'uTex']);
   program('up', 'full.vert', 'up.frag', ['uSrc', 'uDst', 'uTex']);
@@ -585,9 +583,6 @@ let flashT = -1, nextFlash = 3, flashX = 0, flashY = 0.6, boltOn = 0, boltX = 0,
 let sunVis = 0, sunE = 0, moonVis = 0, moonLx = 0, moonLz = 1;
 const NIGHT = hexRGB(CONFIG.colors.night).map(v => Math.pow(v, 2.2));
 const MOON_E = 1 / 110;          // moonlight relative to sunlight (artistic: ~1/400 000 in reality, invisible on a phone)
-// galactic ← equatorial (J2000), rows = galactic x (centre), y (l = 90°), z (north galactic pole)
-const GAL = [-0.0548755604, -0.8734370902, -0.4838350155, 0.4941094279, -0.4448296300, 0.7469822445, -0.8676661490, -0.1980763734, 0.4559837762];
-
 let nativeVel = 0;
 function frame(now) {
   rafId = requestAnimationFrame(frame);
@@ -626,7 +621,7 @@ function regimes(e) {
   const s = 1 / (wN + wT + wG + wD + 1e-4);
   WTS[0] = wN * s; WTS[1] = wT * s; WTS[2] = wG * s; WTS[3] = wD * s;
 }
-// local frame (x right, y up, z forward) → equatorial frame, turned by sidereal time; then → galactic
+// local frame (x right, y up, z forward) → equatorial frame, turned by sidereal time (the stars live there)
 function skyFrames(lat, south) {
   dirAzAlt(0, (90 - lat) * RAD, south, EQ_M);          // celestial equator on the meridian
   dirAzAlt(Math.PI / 2, 0, south, EQ_W);              // due west
@@ -635,8 +630,6 @@ function skyFrames(lat, south) {
   for (let j = 0; j < 3; j++) {                         // column-major: column j = (ex[j], ey[j], ez[j])
     EQM[j * 3] = cl * EQ_M[j] + sl * EQ_W[j]; EQM[j * 3 + 1] = sl * EQ_M[j] - cl * EQ_W[j]; EQM[j * 3 + 2] = EQ_P[j];
   }
-  for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++)
-    GALM[j * 3 + i] = GAL[i * 3] * EQM[j * 3] + GAL[i * 3 + 1] * EQM[j * 3 + 1] + GAL[i * 3 + 2] * EQM[j * 3 + 2];
 }
 // Where the camera looks, like a photographer would: by day with the sun at
 // its back (front-lit clouds, the way they are photographed), toward the sun
@@ -680,7 +673,7 @@ function update(dt) {
   MOONU[0] = MOOND[1] * MOONR[2] - MOOND[2] * MOONR[1]; MOONU[1] = MOOND[2] * MOONR[0] - MOOND[0] * MOONR[2]; MOONU[2] = MOOND[0] * MOONR[1] - MOOND[1] * MOONR[0];
   const ph = A.moonPhase * Math.PI * 2;
   moonLx = Math.sin(ph) * (south ? -1 : 1); moonLz = -Math.cos(ph);
-  // stars and the Milky Way live on the celestial sphere
+  // the stars live on the celestial sphere
   skyFrames(lat, south);
   // light for the clouds: the sun, handing over to the moon through twilight
   const sm = sstep(-0.16, -0.04, sunE);
@@ -829,12 +822,12 @@ function render(dt) {
     toRT(skyT); gl.useProgram(PR.sky); u = UL.sky;
     bindTex(0, gl.TEXTURE_2D, texNoise); bindTex(1, gl.TEXTURE_2D, fieldT[fieldIdx].t);
     bindTex(2, gl.TEXTURE_2D, cHist[histIdx].t); bindTex(3, gl.TEXTURE_2D, glassT.t);
-    bindTex(4, gl.TEXTURE_2D, transT.t); bindTex(5, gl.TEXTURE_2D, skySunT.t); bindTex(6, gl.TEXTURE_2D, skyMoonT.t); bindTex(7, gl.TEXTURE_2D, texMilky || texBlack);
+    bindTex(4, gl.TEXTURE_2D, transT.t); bindTex(5, gl.TEXTURE_2D, skySunT.t); bindTex(6, gl.TEXTURE_2D, skyMoonT.t);
     gl.uniform1i(u.uNoise, 0); gl.uniform1i(u.uField, 1); gl.uniform1i(u.uClouds, 2); gl.uniform1i(u.uGlass, 3);
-    gl.uniform1i(u.uTrans, 4); gl.uniform1i(u.uSkyS, 5); gl.uniform1i(u.uSkyM, 6); gl.uniform1i(u.uMilky, 7);
+    gl.uniform1i(u.uTrans, 4); gl.uniform1i(u.uSkyS, 5); gl.uniform1i(u.uSkyM, 6);
     gl.uniform2f(u.uRes, cw, ch); gl.uniform1f(u.uTime, skyClock);
     gl.uniform3fv(u.uCamF, CAMF); gl.uniform3fv(u.uCamU, CAMU); gl.uniform3fv(u.uCamR, CAMR); gl.uniform2fv(u.uTan, CTAN);
-    gl.uniformMatrix3fv(u.uEqRot, false, EQM); gl.uniformMatrix3fv(u.uGalRot, false, GALM);
+    gl.uniformMatrix3fv(u.uEqRot, false, EQM);
     gl.uniform3fv(u.uLight, LGT); gl.uniform1f(u.uExposure, CONFIG.sky.exposure); gl.uniform3f(u.uNight, NIGHT[0], NIGHT[1], NIGHT[2]);
     gl.uniform3fv(u.uSunDir, SUND); gl.uniform3fv(u.uMoonDir, MOOND); gl.uniform3fv(u.uMoonR, MOONR); gl.uniform3fv(u.uMoonU, MOONU);
     gl.uniform4f(u.uSun, sunVis, sunE, 0, 0); gl.uniform4f(u.uMoon, moonVis, A.moonFrac, 0, 0); gl.uniform3f(u.uMoonL, moonLx, 0, moonLz);
