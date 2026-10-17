@@ -111,7 +111,7 @@ function releaseVelocity(now) {   // px/s over the last ~90 ms of samples
 let pressW = null, pressX = 0, pressY = 0;
 function releasePress() { if (pressW) pressW.pressT = 0; MF.down = false; }
 vp.addEventListener('pointerdown', e => {
-  if (EX.active) return;
+  if (EX.active) { if (!EX.open) suppressClick = false; return; }   // (closing: the tap still arrives as a click on the widget)
   markInteraction(); enableTilt();
   SC.id = e.pointerId; SC.sx = e.clientX; SC.sy = e.clientY; SC.axis = 0; SC.lastMove = performance.now(); suppressClick = false;
   SC.start = rawFromScroll(SC.y);                       // continue from what's on screen
@@ -439,7 +439,7 @@ function sheetPairsUpdate(p) {
    it dismisses with velocity hand-off (Apple's projection decides).
    ============================================================================= */
 const EX = { active: false, open: false, w: null, s: new Float32Array(5), v: new Float32Array(5), t: new Float32Array(5),
-  src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, q: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '',
+  src: new Float32Array(5), dst: new Float32Array(5), prog: 0, hide: 0, q: 0, resp: 0.5, zeta: 0.86, drag: false, dy0: 0, dyl: 0, fade: 1, lastF: '', cm: 0,
   ht: new Float64Array(8), hy: new Float64Array(8), hn: 0, lastT: '', fresh: 0, rest: false };
 // sheet springs (response s, damping ratio): open and close are critically damped
 // or nearly so — the zoom lands without wobble; a throw back up keeps a little life
@@ -465,7 +465,8 @@ function widgetScreenRect(w, out) {
   out[0] = w.x + (w.w - out[2]) / 2; out[1] = w.y - SC.y + (w.inHero ? heroShift : 0) + (w.h - out[3]) / 2;
 }
 function openDetail(w) {
-  if (EX.open || !DATA || (EX.active && EX.w !== w)) return;
+  if (EX.open || !DATA) return;
+  if (EX.active && EX.w !== w) finishClose();   // a tap on another widget while the last sheet is still settling: land it now, never drop the tap
   const p = buildPane(w.key);            // normally already built and laid out in memory: nothing to do
   if (!p) return;
   markInteraction();
@@ -479,7 +480,7 @@ function openDetail(w) {
   dst[0] = 8 + safeL; dst[1] = safeT + 8; dst[2] = cssW - 16 - safeL - safeR; dst[3] = cssH - dst[1] - 8; dst[4] = 34;
   dp.style.left = dst[0] + 'px'; dp.style.top = dst[1] + 'px'; dp.style.width = dst[2] + 'px'; dp.style.height = dst[3] + 'px';
   widgetScreenRect(w, EX.src);
-  if (!EX.active) { EX.s.set(calm ? dst : EX.src); EX.v.fill(0); EX.fade = calm ? 0 : 1; }
+  if (!EX.active) { EX.s.set(calm ? dst : EX.src); EX.v.fill(0); EX.fade = calm ? 0 : 1; EX.cm = 0; }
   EX.t.set(dst); EX.w = w; EX.open = true; EX.active = true; EX.resp = SP_OPEN[0]; EX.zeta = SP_OPEN[1];
   EX.lastT = ''; EX.fresh = 2;           // if the sheet had to be built now, that frame is long: don't let the springs jump over it
   EX.w.el.style.transformOrigin = '0 0';
@@ -522,14 +523,19 @@ function expandUpdate(dt) {
   // to be gone by the time the sheet covers it, or it reads through the moving panel (text on text).
   // The spring covers most of its distance early, a pure time ramp lags behind it: take whichever is
   // further along. On the way back the same rule makes the text return only once the panel has shrunk.
-  PAGE_OP = 1 - Math.max(sstep(0, 0.5, q), calm ? 0 : sstep(0, 0.5, clamp(p, 0, 1)));
+  // Opening and closing are not mirror images: the page must be gone before the panel covers it, but on
+  // the way back it should start returning the moment the sheet's content has left (no waiting for the
+  // last 0.2 s and then popping in). cm eases between the two sets of windows so a drag-release has no jump.
+  EX.cm += ((EX.open ? 0 : 1) - EX.cm) * (1 - Math.exp(-dt * 14));
+  const cm = calm ? 0 : EX.cm;
+  PAGE_OP = 1 - Math.max(sstep(lerp(0, 0.04, cm), lerp(0.5, 0.62, cm), q), calm ? 0 : (1 - cm) * sstep(0, 0.5, clamp(p, 0, 1)));
   const fo = EX.fade.toFixed(3);
   if (fo !== EX.lastF) { dp.style.opacity = fo === '1.000' ? '' : fo; EX.lastF = fo; }
   // transform-only zoom (compositor, no repaint): the clip box scales non-uniformly
   // to the moving rectangle, the content inside counter-scales to a uniform zoom
   const sx = Math.max(0.02, s[2] / dst[2]), sy = Math.max(0.02, s[3] / dst[3]);
   const tf = 'translate3d(' + (s[0] - dst[0]).toFixed(2) + 'px,' + (s[1] - dst[1]).toFixed(2) + 'px,0) scale(' + sx.toFixed(5) + ',' + sy.toFixed(5) + ')';
-  const key = tf + p.toFixed(3) + '|' + q.toFixed(3);   // p carries the reduced-motion fade too
+  const key = tf + p.toFixed(3) + '|' + q.toFixed(3) + '|' + cm.toFixed(2);   // p carries the reduced-motion fade too
   if (key !== EX.lastT) {
     dp.style.transform = tf;
     dpi.style.transform = 'scale(1,' + (sx / sy).toFixed(5) + ')';
@@ -540,7 +546,7 @@ function expandUpdate(dt) {
     // being blown up with the glass, so it must be gone by ~1.3×), the sheet's arrives after, with
     // no overlap — two layouts are never on screen at once. Reduced motion keeps a plain cross-fade.
     const sh = sstep(0.15, calm ? 0.85 : 0.6, q);         // what both share cross-dissolves while it flies
-    const co = (calm ? sstep(0.25, 1, q) : sstep(0.28, 0.72, q)).toFixed(3), bo = sh.toFixed(3);
+    const co = (calm ? sstep(0.25, 1, q) : sstep(lerp(0.28, 0.6, cm), lerp(0.72, 0.95, cm), q)).toFixed(3), bo = sh.toFixed(3);
     for (const c of dh.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
     if (activePane) for (const c of activePane.el.children) c.style.opacity = SMP.some(q => q.b === c) ? bo : co;
     sheetPairsUpdate(p);
@@ -550,7 +556,7 @@ function expandUpdate(dt) {
     const w = EX.w, ps = PUSH, ccx = cssW / 2, ccy = cssH / 2;
     const bx = (1 - ps) * ccx + ps * w.x, by = (1 - ps) * ccy + ps * (w.y - SC.y + (w.inHero ? heroShift : 0)), bw = ps * w.w;
     w.el.style.transform = 'translate3d(' + ((s[0] - bx) / ps).toFixed(2) + 'px,' + ((s[1] - by) / ps).toFixed(2) + 'px,0) scale(' + (s[2] / bw).toFixed(5) + ')';
-    const wOut = calm ? sstep(0, 0.7, q) : sstep(0, 0.26, q);
+    const wOut = calm ? sstep(0, 0.7, q) : sstep(0, lerp(0.26, 0.55, cm), q);   // back again as soon as the sheet's content is gone
     if (calm || !SMP.length) w.el.style.opacity = (1 - wOut).toFixed(3);
     else {                                                // the widget's other content leaves first, its title and value stay to cross-dissolve with the sheet's
       w.el.style.opacity = '';
@@ -564,18 +570,23 @@ function expandUpdate(dt) {
   EX.rest = EX.open && still;
   if (!EX.open) {
     let done = true;
-    for (let i = 0; i < 5; i++) if (Math.abs(s[i] - t[i]) > 0.5 || Math.abs(v[i]) > 6) done = false;
+    for (let i = 0; i < 5; i++) if (Math.abs(s[i] - t[i]) > 1 || Math.abs(v[i]) > 24) done = false;
     if (calm) done = EX.fade <= 0; else if (EX.q > 0.002) done = false;
-    if (done) {
-      EX.active = false; EX.rest = false; detail.classList.remove('on');
-      const w = EX.w;
-      w.el.style.opacity = '1'; for (const c of w.el.children) c.style.opacity = ''; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
-      for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
-      SMP.length = 0;
-      EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
-      CS.c = null;                         // the sheet stays built (and laid out) for next time
-    }
+    if (done) finishClose();
   }
+}
+// The close is over: hand everything back to the page. Also called when a tap on another widget
+// arrives while the last one is still settling (see openDetail) — nothing should wait for a spring's tail.
+function finishClose() {
+  if (!EX.active || EX.open) return;
+  EX.active = false; EX.rest = false; detail.classList.remove('on');
+  const w = EX.w;
+  w.el.style.opacity = '1'; for (const c of w.el.children) c.style.opacity = ''; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
+  for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
+  SMP.length = 0;
+  EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.cm = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
+  CS.c = null;                         // the sheet stays built (and laid out) for next time
+  lastCT = ''; MF.lk = '';             // the page's transform and opacity are rewritten next frame
 }
 // Drag down to dismiss — from the header, or anywhere on the body once it is
 // scrolled to the top (like an iOS sheet). The sheet tracks the finger 1:1;
