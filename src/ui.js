@@ -255,7 +255,7 @@ function uiUpdate(dt) {
   if (bv !== lastBar) { bar.style.setProperty('--bar', bv); lastBar = bv; }
   const s = PUSH, cx = cssW / 2, cy = cssH / 2;
   const ct = 'translate3d(' + ((1 - s) * cx).toFixed(2) + 'px,' + (-s * y + (1 - s) * cy).toFixed(2) + 'px,0) scale(' + s.toFixed(4) + ')';
-  const fadeN = PAGE_OP;                                  // page text, top bar and the flying copies: gone by the time the sheet covers them (see expandUpdate)
+  const fadeN = PAGE_OP;                                  // page text, top bar and the flying copies: always fully there (the sheet panel carries a veil, see expandUpdate)
   const ck = ct + PAGE_OP.toFixed(3);
   if (ck !== lastCT) {
     // The glass is composed in WebGL *under* the DOM, so it cannot blur page
@@ -449,6 +449,7 @@ const SP_OPEN = [0.40, 0.9], SP_CLOSE = [0.36, 0.96], SP_BACK = [0.32, 0.82];
 // its first instants, so a fade windowed on that progress is over in a few frames — a cut.
 // EX.q ramps steadily (and turns around mid-way without a jump); while dragging it follows the finger.
 const Q_OPEN = 0.48, Q_CLOSE = 0.40;
+const TINT = 0.82;                                    // opacity of the dark veil on the sheet panel over the page text
 const detail = $('detail'), dp = $('dp'), dpi = $('dpi'), dh = $('dh'), db = $('db');
 let safeT = 0, safeB = 0, safeL = 0, safeR = 0;
 function measureSafe() {
@@ -519,16 +520,13 @@ function expandUpdate(dt) {
   else { const st = dt / (EX.open ? Q_OPEN : Q_CLOSE); EX.q = EX.open ? Math.min(1, EX.q + st) : Math.max(0, EX.q - st); }
   const q = EX.q;
   PUSH = 1 - (calm ? 0 : 0.06 * p); UI_DIM = sstep(0, 1, q);
-  // The glass is composed under the DOM, so the page's text cannot be blurred behind the sheet — it has
-  // to be gone by the time the sheet covers it, or it reads through the moving panel (text on text).
-  // The spring covers most of its distance early, a pure time ramp lags behind it: take whichever is
-  // further along. On the way back the same rule makes the text return only once the panel has shrunk.
-  // Opening and closing are not mirror images: the page must be gone before the panel covers it, but on
-  // the way back it should start returning the moment the sheet's content has left (no waiting for the
-  // last 0.2 s and then popping in). cm eases between the two sets of windows so a drag-release has no jump.
+  // The page behind is always there: its text never fades in or out (a fade of the text was what read as
+  // late and abrupt on the way back). The glass is composed under the DOM, so the text cannot be blurred
+  // behind the sheet; instead the sheet panel carries a translucent tint (below) that quiets it.
+  // cm eases between the opening and closing windows of the sheet's own fades, so a drag-release has no jump.
   EX.cm += ((EX.open ? 0 : 1) - EX.cm) * (1 - Math.exp(-dt * 14));
   const cm = calm ? 0 : EX.cm;
-  PAGE_OP = 1 - Math.max(sstep(lerp(0, 0.04, cm), lerp(0.5, 0.62, cm), q), calm ? 0 : (1 - cm) * sstep(0, 0.5, clamp(p, 0, 1)));
+  PAGE_OP = 1;
   const fo = EX.fade.toFixed(3);
   if (fo !== EX.lastF) { dp.style.opacity = fo === '1.000' ? '' : fo; EX.lastF = fo; }
   // transform-only zoom (compositor, no repaint): the clip box scales non-uniformly
@@ -538,6 +536,10 @@ function expandUpdate(dt) {
   const key = tf + p.toFixed(3) + '|' + q.toFixed(3) + '|' + cm.toFixed(2);   // p carries the reduced-motion fade too
   if (key !== EX.lastT) {
     dp.style.transform = tf;
+    if (CONFIG.glassWidgets) {   // quiets the page text behind the sheet; arrives once the widget's own content is gone, leaves before it returns
+      const ta = TINT * sstep(lerp(0.26, 0.6, cm), lerp(0.6, 0.95, cm), q);
+      dp.style.backgroundColor = ta < 0.002 ? '' : 'rgba(10,16,34,' + ta.toFixed(3) + ')';
+    }
     dpi.style.transform = 'scale(1,' + (sx / sy).toFixed(5) + ')';
     dp.style.borderRadius = (s[4] / sx).toFixed(1) + 'px/' + (s[4] / sy).toFixed(1) + 'px';
     // the sheet's own content fades in as it grows; what it shares with the widget (title,
@@ -584,7 +586,7 @@ function finishClose() {
   w.el.style.opacity = '1'; for (const c of w.el.children) c.style.opacity = ''; w.el.style.transformOrigin = ''; w.el.style.transform = 'scale(' + (1 - 0.03 * w.press).toFixed(4) + ')'; w.lastS = 1 - 0.03 * w.press; w.lk = '';
   for (const q of SMP) { const a = w.el.querySelector(q.qa); if (a) a.style.transform = ''; q.b.style.transform = ''; }
   SMP.length = 0;
-  EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.cm = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = '';
+  EX.w = null; PUSH = 1; UI_DIM = 0; PAGE_OP = 1; EX.prog = 0; EX.hide = 0; EX.q = 0; EX.cm = 0; EX.lastT = ''; EX.fade = 1; EX.lastF = ''; dp.style.opacity = ''; dp.style.backgroundColor = '';
   CS.c = null;                         // the sheet stays built (and laid out) for next time
   lastCT = ''; MF.lk = '';             // the page's transform and opacity are rewritten next frame
 }
