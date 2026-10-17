@@ -1,6 +1,6 @@
 // ═══ CIEL — sky compositor, WGSL twin of sky.frag (see there for the full notes) ═══
 // refraction (drops, ripples, splashes) → view ray (reflected below the horizon)
-// → atmosphere LUTs → stars + Milky Way → sun & moon → volumetric clouds →
+// → atmosphere LUTs → stars → sun & moon → volumetric clouds →
 // ACES + sRGB → lightning, water, fog → 3-D rain & snow → drops on the glass
 #include atmos.wgsl
 #include full.wgsl
@@ -11,7 +11,6 @@ struct U {
   camF: vec4f, camU: vec4f, camR: vec4f,
   tanv: vec4f,
   eqRot: mat3x3f,      // local → equatorial
-  galRot: mat3x3f,     // local → galactic
   sunDir: vec4f, moonDir: vec4f, moonR: vec4f, moonU: vec4f,
   sun: vec4f,          // x disk visibility, y sin(elevation)
   moon: vec4f,         // x visibility, y illuminated fraction
@@ -36,10 +35,8 @@ struct U {
 @group(0) @binding(5) var tTrans: texture_2d<f32>;
 @group(0) @binding(6) var tSkyS: texture_2d<f32>;
 @group(0) @binding(7) var tSkyM: texture_2d<f32>;
-@group(0) @binding(8) var tMilky: texture_2d<f32>;
-@group(0) @binding(9) var sClamp: sampler;
-@group(0) @binding(10) var sRep: sampler;
-@group(0) @binding(11) var sMilky: sampler;
+@group(0) @binding(8) var sClamp: sampler;
+@group(0) @binding(9) var sRep: sampler;
 
 fn aces(x: vec3f) -> vec3f { return clamp(x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14), vec3f(0.0), vec3f(1.0)); }
 fn toDisplay(lin: vec3f) -> vec3f {
@@ -203,14 +200,11 @@ fn snowCyl(ang: f32, el: f32, R: f32, slant: f32, dens: f32, pxm: f32) -> f32 {
   Ls = mix(Ls, vec3f(lum0) * vec3f(0.95, 0.97, 1.0) * (1.0 - 0.5 * u.cloud.w), ss(0.55, 1.0, cover) * (0.22 + 0.38 * ss(0.05, 0.35, u.cloud.w)));
   var col = Ls * exposure + uNight * (1.0 - dayL);
 
-  // 3. stars + Milky Way
+  // 3. stars
   let pxr = 2.2 * tanv.y / res.y;
   let dark = clamp(1.0 - lum0 * exposure * 30.0, 0.0, 1.0);
   let starVis = dark * ss(0.0, 0.12, rd.y) * (1.0 - u.wx.z) * (1.0 - ss(0.45, 0.9, cover));
-  let g = u.galRot * rd;
-  let guv = vec2f(0.5 - atan2(g.y, g.x) / (2.0 * PI), 0.5 - asin(clamp(g.z, -1.0, 1.0)) / PI);
-  let mw = pow(textureSampleLevel(tMilky, sMilky, guv, 0.0).rgb, vec3f(2.2));
-  col += (vec3f(0.82, 0.88, 1.0) * stars(u.eqRot * rd, pxr) * 0.8 + mw * 0.7) * starVis;
+  col += vec3f(0.82, 0.88, 1.0) * stars(u.eqRot * rd, pxr) * 0.8 * starVis;
 
   // 4. sun & moon
   let cs = dot(rd, u.sunDir.xyz);
@@ -251,8 +245,14 @@ fn snowCyl(ang: f32, el: f32, R: f32, slant: f32, dens: f32, pxm: f32) -> f32 {
 
   let depth = clamp((HZ - p.y) / HZ, 0.0, 1.0);
   col = mix(col, col * mix(0.86, 0.16, sqrt(depth)) * vec3f(0.92, 0.96, 1.0), water);
-  let band = exp(-abs(p.y - HZ) * 34.0);
-  col = mix(col, hzD, band * 0.55) + hzD * exp(-abs(p.y - HZ) * 260.0) * 0.06;
+  // horizon haze, in every weather: the lake mists into the sky through a luminous band, with streaks of
+  // mist in it, instead of meeting it in a hard line (fog brings its own, so it gets less of this)
+  let lumH = dot(hzD, vec3f(0.2126, 0.7152, 0.0722));
+  let hzG = mix(hzD, vec3f(lumH) * vec3f(0.95, 0.97, 1.0) * (1.0 - 0.5 * u.cloud.w), ss(0.55, 1.0, cover) * (0.22 + 0.38 * ss(0.05, 0.35, u.cloud.w)));
+  let hy = p.y - HZ;
+  let hN = textureSample(tNoise, sRep, vec2f(p.x * 0.7, p.y * 1.6) + u.drift2.zw).g;
+  let hb = exp(-hy * hy / select(0.0170, 0.0045, hy > 0.0)) * (0.84 + 0.32 * hN) * (1.0 - u.wx.z);
+  col = mix(col, hzG, clamp(hb * 0.96, 0.0, 0.97));
   let lum = dot(col, vec3f(0.299, 0.587, 0.114));
 
   let fogN = textureSample(tNoise, sRep, vec2f(p.x * 0.9, p.y * 2.2) + u.drift2.zw).g;

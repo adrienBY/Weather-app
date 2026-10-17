@@ -14,7 +14,6 @@
 //   • clouds     — lightest/clouds (Nikita Agafonov, MIT): 128³ Perlin-Worley shape
 //                  volume (box-filtered to 64³), 32³ Worley erosion volume, tileable
 //                  weather map (box-filtered to 256²)
-//   • Milky Way  — ESO/S. Brunier GigaGalaxy Zoom panorama (CC BY 4.0), via lightest/clouds
 //   • font       — Inter variable (opsz + wght), SIL OFL 1.1, from @fontsource-variable/inter
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +30,6 @@ Object.assign(SRC, {
   shape: LIGHTEST + 'noise_shape_packed128.png',
   erosion: LIGHTEST + 'noise_erosion_packed.png',
   weather: LIGHTEST + 'weather_turbulent.png',
-  milky: LIGHTEST + 'milkyway.jpg',
 });
 const cacheDir = path.join(root, 'assets/.cache');
 fs.mkdirSync(cacheDir, { recursive: true });
@@ -96,8 +94,6 @@ for (let c = 0; c < 2; c++) {
   for (let i = 0; i < WW * WW; i++) wbuf[i * 3 + c] = cdf[wbuf[i * 3 + c]];
 }
 const weather = await sharp(wbuf, { raw: { width: WW, height: WW, channels: 3 } }).png({ compressionLevel: 9 }).toBuffer();
-// Milky Way: 1280×640 galactic plate carrée → 1024×512
-const milky = await sharp(await get('milkyway', SRC.milky)).resize(1024, 512, { kernel: 'lanczos3' }).jpeg({ quality: 84, mozjpeg: true }).toBuffer();
 
 const font = fs.readFileSync(path.join(root, 'node_modules/@fontsource-variable/inter/files/inter-latin-opsz-normal.woff2'));
 
@@ -114,7 +110,7 @@ const css = rd('src/styles.css').replace('__FONT_B64__', font.toString('base64')
 const app = rd('src/app.js').replace('//@@GPU@@', () => rd('src/gpu.js')).replace('//@@UI@@', () => rd('src/ui.js'))
   .replace('__DROP_B64__', drop.toString('base64'))
   .replace('__SHAPE_B64__', shape.toString('base64')).replace('__EROSION_B64__', erosion.toString('base64'))
-  .replace('__WEATHER_B64__', weather.toString('base64')).replace('__MILKY_B64__', milky.toString('base64'));
+  .replace('__WEATHER_B64__', weather.toString('base64'));
 if (app.includes('</script')) throw new Error('app contains </script');
 
 // functions as replacers so `$&`-style patterns in the sources are left alone
@@ -122,7 +118,7 @@ const html = rd('src/index.html')
   .replace('@@STYLES@@', () => css)
   .replace('@@SHADERS@@', () => shaders)
   .replace('@@APP@@', () => app);
-if (/__(FONT|DROP|SHAPE|EROSION|WEATHER|MILKY)_B64__|@@(STYLES|SHADERS|APP|UI)@@/.test(html)) throw new Error('placeholder left in output');
+if (/__(FONT|DROP|SHAPE|EROSION|WEATHER)_B64__|@@(STYLES|SHADERS|APP|UI)@@/.test(html)) throw new Error('placeholder left in output');
 fs.writeFileSync(path.join(root, 'www/index.html'), html);
 const kb = b => (b.length / 1024).toFixed(0) + ' KB';
-console.log(`www/index.html ${kb(html)} — drop ${kb(drop)}, shape ${kb(shape)}, erosion ${kb(erosion)}, weather ${kb(weather)}, milky way ${kb(milky)}, font ${kb(font)}, ${shaders.match(/<script/g).length} shader sources`);
+console.log(`www/index.html ${kb(html)} — drop ${kb(drop)}, shape ${kb(shape)}, erosion ${kb(erosion)}, weather ${kb(weather)}, font ${kb(font)}, ${shaders.match(/<script/g).length} shader sources`);
