@@ -70,7 +70,8 @@ out vec4 outColor;
 vec3 aces(vec3 x) { return clamp(x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
 // + a photographic saturation lift (a camera's look, not the eye's: physically
 //   the sky is paler than we remember it)
-vec3 toDisplay(vec3 lin) { vec3 c = pow(aces(lin), vec3(1.0 / 2.2)); float l = dot(c, vec3(.2126, .7152, .0722)); return clamp(mix(vec3(l), c, 1.32), 0.0, 1.0); }
+// (mediump is fp16 on phones: x*x past ~160 is Inf -> NaN, the blue/cyan blobs around a sun behind cloud; aces is 1.0 well before 40)
+vec3 toDisplay(vec3 lin) { vec3 c = pow(aces(clamp(lin, 0.0, 40.0)), vec3(1.0 / 2.2)); float l = dot(c, vec3(.2126, .7152, .0722)); return clamp(mix(vec3(l), c, 1.32), 0.0, 1.0); }
 // cubic B-spline in 4 bilinear taps (Sigg & Hadwiger 2005)
 vec4 bsplineRGBA(sampler2D t, highp vec2 uv) {
   highp vec2 ts = vec2(textureSize(t, 0));
@@ -116,7 +117,7 @@ float stars(highp vec3 d, float pxr) {
   float s2 = starFace(fx + 1.3, 38., .984, pxr) * mx + starFace(fy + 2.9, 38., .984, pxr) * my + starFace(fz + 4.1, 38., .984, pxr) * mz;
   return s1 + s2 * 1.5;
 }
-// ── 3-D precipitation ───────────────────────────────────────────────────────
+// ── 3-D precipitation ────────────────────────────────────────────────────────────────────────────────────────────────────────
 // The view ray meets a cylinder of radius R (metres) around the camera at
 // height v = tan(elevation)·R and arc length u = azimuth·R. Drops live on a
 // grid in (u, v) that falls at the real speed, so their size, speed and
@@ -205,7 +206,7 @@ void main() {
   highp vec2 cn = vec2(dot(rd, uCamR) / (cz * uTan.x), dot(rd, uCamU) / (cz * uTan.y));
   highp vec2 cuv = vec2(cn.x * .5 + .5, ((cn.y * .5 + .5) - uBand.x) / (uBand.y - uBand.x));
 
-  // ── 2. atmosphere (linear radiance × exposure) ───────────────────────────
+  // ── 2. atmosphere (linear radiance × exposure) ─────────────────────────────────
   float wN = uW.x, wT = uW.y, wG = uW.z, wD = uW.w, e = uSun.y;
   float dayL = wD + wG * .75 + wT * .3;
   float moonLight = uMoon.x * uMoon.y;
@@ -216,7 +217,7 @@ void main() {
   Ls = mix(Ls, vec3(lum0) * vec3(.95, .97, 1.) * (1. - .5 * uCloud.w), smoothstep(.55, 1., cover) * (.22 + .38 * smoothstep(.05, .35, uCloud.w)));
   vec3 col = Ls * uExposure + uNight * (1. - dayL);
 
-  // ── 3. stars + Milky Way ────────────────────────────────────────────────────────
+  // ── 3. stars + Milky Way ───────────────────────────────────────────────────────────────────────
   float pxr = 2.2 * uTan.y / uRes.y;                       // one pixel, in radians-ish
   float dark = clamp(1. - lum0 * uExposure * 30., 0., 1.); // stars come out only once the sky is truly dark
   float starVis = dark * smoothstep(.0, .12, float(rd.y)) * (1. - uWx.z) * (1. - smoothstep(.45, .9, cover));
@@ -225,7 +226,7 @@ void main() {
   vec3 mw = pow(texture(uMilky, vec2(guv)).rgb, vec3(2.2));
   col += (vec3(.82, .88, 1.) * stars(uEqRot * rd, pxr) * .8 + mw * .7) * starVis;
 
-  // ── 4. sun & moon ────────────────────────────────────────────────────────────────────
+  // ── 4. sun & moon ──────────────────────────────────────────────────────────────────────────────────
   highp float cs = dot(rd, uSunDir);
   highp float ds = 1. - cs;
   vec3 sunT = transmit(uTrans, RG + CAM_H, e) * uLight.x;
@@ -247,14 +248,14 @@ void main() {
   col = mix(col, col * (1. - dark) + vec3(.95, .93, .88) * moonT * (.70 + (mare - .5) * .9) * mlit * 1.1, inMoon);
   col += vec3(.75, .80, .95) * exp(-float(1. - cm) * 60.) * .06 * moonLight * dark * (1. - cover * .7);
 
-  // ── 5. volumetric clouds ─────────────────────────────────────────────────────
+  // ── 5. volumetric clouds ───────────────────────────────────────────────────────────────────
   // cubic B-spline upscale of the cloud buffer (4 bilinear taps): smooth, with
   // no texel squares — and it folds the 4 interleaved sub-pixels together
   vec4 cl = bsplineRGBA(uClouds, cuv);
   cl *= step(float(cuv.y), 1.);                             // above the band there are no clouds
   col = col * (1. - cl.a) + cl.rgb * uExposure;
 
-  // ── → display: filmic tone curve + sRGB ──────────────────────────────────
+  // ── → display: filmic tone curve + sRGB ────────────────────────────────────────
   col = toDisplay(col);
   vec3 hzD = toDisplay(skyAt(normalize(vec3(rd.x, .02, rd.z))) * uExposure + uNight);
 
@@ -278,7 +279,7 @@ void main() {
   float fogA = uWx.z * (.50 + .50 * fogN) * (1. - .55 * smoothstep(HZ, .95, float(p.y)));
   col = mix(col, mix(vec3(.025, .027, .032), vec3(.74, .76, .80), dayL) * .85 + hzD * .2, clamp(fogA, 0., .92));
 
-  // ── 7. rain & snow in 3-D ────────────────────────────────────────────────
+  // ── 7. rain & snow in 3-D ────────────────────────────────────────────────────────────
   float rain = uWx.x, snow = uWx.y;
   if (rain + snow > .01) {
     highp vec3 fh = normalize(vec3(uCamF.x, 0., uCamF.z));
@@ -302,7 +303,7 @@ void main() {
     }
   }
 
-  // ── 8. drops on the glass ────────────────────────────────────────────────
+  // ── 8. drops on the glass ──────────────────────────────────────────────────────────────────────
   float lowRim = smoothstep(.40, .08, gw.r) * ga, spec = smoothstep(.70, .97, gw.g) * smoothstep(.35, .55, gw.r) * ga;
   col = col * (1. - lowRim * .28) * (1. + ga * .06) + spec * (.12 + lum * .45);
   col += rGlow * .07 * (.15 + lum);

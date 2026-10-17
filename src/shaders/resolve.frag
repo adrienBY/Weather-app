@@ -22,4 +22,5 @@ void main() {
   // that removes the variance floor a pure EMA would leave at hard cloud rims
   vec4 r = mix(mix(hist, freshB, uBlend * 0.2), mix(hist, mix(fresh, freshB, 0.5), uBlend), mine);
   o = mix(r, freshB, uFill);
+  if (any(isnan(o)) || any(isinf(o))) o = vec4(0.0);   // a poisoned history pixel heals itself
 }

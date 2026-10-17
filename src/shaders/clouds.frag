@@ -1,5 +1,5 @@
 #version 300 es
-/* ── Volumetric clouds ───────────────────────────────────────────────────────
+/* ── Volumetric clouds ──────────────────────────────────────────────────────────────────────
    Ray-marched through a spherical cloud shell above a curved Earth.
 
    Framing a photographer would choose: in fair weather the sky overhead stays
@@ -226,5 +226,6 @@ void main() {
   vec3 skyRd = skyLookup(uSkyS, rd, uSunDir) * uLight.x + skyLookup(uSkyM, rd, uMoonDir) * uLight.y;
   float fog = exp(-depth * 0.018) * smoothstep(0.0, 0.10, rd.y);
   L = mix(skyRd * a, L, fog);
-  o = vec4(L, a);
+  L = any(isnan(L)) || isnan(a) ? vec3(0.0) : min(L, vec3(2000.0));   // never let one bad ray poison the history
+  o = vec4(L, isnan(a) ? 0.0 : a);
 }

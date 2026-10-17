@@ -194,5 +194,5 @@ fn skyAt(rd: vec3f) -> vec3f {
   let skyRd = skyAt(rd);
   let fog = exp(-depth * 0.018) * ss(0.0, 0.10, rd.y);
   L = mix(skyRd * a, L, fog);
-  return vec4f(L, a);
+  return vec4f(min(L, vec3f(2000.0)), a);
 }
