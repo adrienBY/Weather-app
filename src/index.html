@@ -64,14 +64,14 @@
 <!-- expanded widget: laid out once at full size, zoomed from the tapped widget.
      #dp clips (scaled to the moving rectangle), #dpi counter-scales the content to a uniform zoom -->
 <div id="detail" aria-hidden="true">
-  <div id="dp" role="dialog" aria-modal="true"><div id="dpi">
+  <div id="dp" role="dialog" aria-modal="true"><div id="dpv"></div><div id="dpi">
     <div id="dh">
       <div class="grab"></div>
       <div class="dtitle"><svg id="dIcon" viewBox="0 0 24 24"></svg><h1 id="dTitle"></h1></div>
       <button id="dClose" class="press" aria-label="Close"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
     </div>
     <div id="db"></div>
-  </div></div>
+  </div><div id="dpc"></div></div>
 </div>
 
 <div id="menu" role="menu">
