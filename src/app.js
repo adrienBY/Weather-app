@@ -889,3 +889,4 @@ function stop() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; }
 function markInteraction() { lastInteract = performance.now(); }
 
 //@@GPU@@
+//@@UI@@
